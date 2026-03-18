@@ -8,7 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -33,31 +33,9 @@ def _install_openreview_stub() -> None:
     sys.modules["openreview"] = stub
 
 
-def _install_requests_stub() -> None:
-    if "requests" in sys.modules:
-        return
-
-    stub = types.ModuleType("requests")
-
-    class Timeout(Exception):
-        pass
-
-    class RequestException(Exception):
-        pass
-
-    def get(*_args, **_kwargs):
-        raise RequestException("requests stub used outside patched path")
-
-    stub.Timeout = Timeout
-    stub.RequestException = RequestException
-    stub.get = get
-    sys.modules["requests"] = stub
 
 
 _install_openreview_stub()
-_install_requests_stub()
-
-import requests
 
 from openreview_scraper import openreview as orw, settings
 
@@ -277,90 +255,91 @@ class OpenReviewNetworkTests(unittest.TestCase):
     def test_download_pdf_rate_limit_raises_actionable_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            response = Mock()
-            response.status_code = 429
-            response.headers = {"Retry-After": "2"}
-            response.raise_for_status = Mock()
+            exc_cls = orw.openreview.OpenReviewException
+
+            class FakeClient:
+                def get_pdf(self, _paper_id: str) -> bytes:
+                    raise exc_cls("429 Too Many Requests")
 
             env = {
                 "OPENREVIEW_SCRAPER_HTTP_MAX_RETRIES": "0",
-                "OPENREVIEW_SCRAPER_HTTP_RETRY_BACKOFF_SECONDS": "0",
-                "OPENREVIEW_SCRAPER_HTTP_RETRY_JITTER_SECONDS": "0",
             }
 
             with patch.dict(os.environ, env, clear=False):
                 settings.reset_settings_cache()
-                with patch("openreview_scraper.openreview.requests.get", return_value=response):
+                with patch("openreview_scraper.openreview.get_client", return_value=FakeClient()):
                     with self.assertRaises(orw.RateLimitError) as ctx:
                         orw.download_pdf("paper-429", output_dir)
 
-        self.assertIn("HTTP 429", str(ctx.exception))
-        self.assertIn("Retry-After=2", str(ctx.exception))
+        self.assertIn("Rate-limited during 'download PDF for paper 'paper-429''", str(ctx.exception))
 
     def test_download_pdf_retries_timeout_then_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            success_response = Mock()
-            success_response.status_code = 200
-            success_response.headers = {}
-            success_response.content = b"%PDF-1.4 test"
-            success_response.raise_for_status = Mock()
+            exc_cls = orw.openreview.OpenReviewException
+            api_calls = 0
+
+            class FakeClient:
+                def get_pdf(self, _paper_id: str) -> bytes:
+                    nonlocal api_calls
+                    api_calls += 1
+                    if api_calls == 1:
+                        raise exc_cls("timeout while waiting")
+                    return b"%PDF-1.4 test"
 
             env = {
                 "OPENREVIEW_SCRAPER_HTTP_MAX_RETRIES": "1",
-                "OPENREVIEW_SCRAPER_HTTP_TIMEOUT_SECONDS": "0.1",
                 "OPENREVIEW_SCRAPER_HTTP_RETRY_BACKOFF_SECONDS": "0",
                 "OPENREVIEW_SCRAPER_HTTP_RETRY_JITTER_SECONDS": "0",
             }
 
             with patch.dict(os.environ, env, clear=False):
                 settings.reset_settings_cache()
-                with patch(
-                    "openreview_scraper.openreview.requests.get",
-                    side_effect=[requests.Timeout("timed out"), success_response],
-                ) as mock_get:
+                with patch("openreview_scraper.openreview.get_client", return_value=FakeClient()):
                     pdf_path = orw.download_pdf("paper-timeout", output_dir)
 
-            self.assertEqual(mock_get.call_count, 2)
+            self.assertEqual(api_calls, 2)
             self.assertTrue(pdf_path.exists())
             self.assertEqual(pdf_path.read_bytes(), b"%PDF-1.4 test")
-
-    def test_download_pdf_rejects_non_pdf_content_type(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            response = Mock()
-            response.status_code = 200
-            response.headers = {"Content-Type": "text/html"}
-            response.content = b"%PDF-1.4 test"
-            response.raise_for_status = Mock()
-
-            with patch("openreview_scraper.openreview.requests.get", return_value=response):
-                with self.assertRaises(orw.PDFValidationError):
-                    orw.download_pdf("paper-html", output_dir)
 
     def test_download_pdf_rejects_invalid_body_signature(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            response = Mock()
-            response.status_code = 200
-            response.headers = {"Content-Type": "application/pdf"}
-            response.content = b"not-a-real-pdf"
-            response.raise_for_status = Mock()
+            class FakeClient:
+                def get_pdf(self, _paper_id: str) -> bytes:
+                    return b"not-a-real-pdf"
 
-            with patch("openreview_scraper.openreview.requests.get", return_value=response):
+            with patch("openreview_scraper.openreview.get_client", return_value=FakeClient()):
                 with self.assertRaises(orw.PDFValidationError):
                     orw.download_pdf("paper-invalid", output_dir)
+
+    def test_download_pdf_downloads_from_api_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            class FakeClient:
+                paper_id: str | None = None
+
+                def get_pdf(self, paper_id: str) -> bytes:
+                    self.paper_id = paper_id
+                    return b"%PDF-1.4 via api"
+
+            fake_client = FakeClient()
+
+            with patch("openreview_scraper.openreview.get_client", return_value=fake_client):
+                pdf_path = orw.download_pdf("paper-api", output_dir)
+
+        self.assertEqual(fake_client.paper_id, "paper-api")
+        self.assertTrue(pdf_path.exists())
+        self.assertEqual(pdf_path.read_bytes(), b"%PDF-1.4 via api")
 
     def test_download_pdf_uses_atomic_write_without_temp_leak(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            response = Mock()
-            response.status_code = 200
-            response.headers = {"Content-Type": "application/pdf"}
-            response.content = b"%PDF-1.4 atomic"
-            response.raise_for_status = Mock()
+            class FakeClient:
+                def get_pdf(self, _paper_id: str) -> bytes:
+                    return b"%PDF-1.4 atomic"
 
-            with patch("openreview_scraper.openreview.requests.get", return_value=response):
+            with patch("openreview_scraper.openreview.get_client", return_value=FakeClient()):
                 pdf_path = orw.download_pdf("paper-atomic", output_dir)
 
             tmp_files = list(output_dir.glob("*.tmp"))

@@ -10,7 +10,6 @@ import time
 from typing import Any, Callable, TypeVar
 
 import openreview
-import requests
 
 from .models import DiscussionPost, Paper, PaperDiscussion, Review
 from .settings import get_settings
@@ -145,66 +144,6 @@ def _retry_openreview_call(
     raise NetworkOperationError(f"OpenReview retry loop exhausted for '{operation_name}'")
 
 
-def _retry_http_get(url: str, operation_name: str) -> requests.Response:
-    runtime_settings = get_settings()
-    max_attempts = runtime_settings.http_max_retries + 1
-
-    for attempt in range(max_attempts):
-        try:
-            response = requests.get(url, timeout=runtime_settings.http_timeout_seconds)
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After")
-                is_last_attempt = attempt == max_attempts - 1
-                if is_last_attempt:
-                    hint = f" Retry-After={retry_after}." if retry_after else ""
-                    raise RateLimitError(
-                        f"HTTP 429 rate-limit during '{operation_name}' after {max_attempts} "
-                        f"attempt(s).{hint} Tune OPENREVIEW_SCRAPER_HTTP_MAX_RETRIES and "
-                        "OPENREVIEW_SCRAPER_HTTP_RETRY_BACKOFF_SECONDS."
-                    )
-                _sleep_before_retry(attempt)
-                continue
-
-            response.raise_for_status()
-            return response
-        except requests.Timeout as exc:
-            if attempt == max_attempts - 1:
-                raise NetworkOperationError(
-                    f"Timeout during '{operation_name}' after {max_attempts} attempt(s). "
-                    "Increase OPENREVIEW_SCRAPER_HTTP_TIMEOUT_SECONDS or reduce retries."
-                ) from exc
-            _sleep_before_retry(attempt)
-        except requests.RequestException as exc:
-            message = str(exc)
-            is_last_attempt = attempt == max_attempts - 1
-            if _is_transient(message) and not is_last_attempt:
-                _sleep_before_retry(attempt)
-                continue
-            if is_last_attempt:
-                raise NetworkOperationError(
-                    f"HTTP request failed during '{operation_name}' after {max_attempts} "
-                    f"attempt(s): {message}"
-                ) from exc
-            raise NetworkOperationError(
-                f"HTTP request failed during '{operation_name}': {message}"
-            ) from exc
-
-    raise NetworkOperationError(f"HTTP retry loop exhausted for '{operation_name}'")
-
-
-def _validate_pdf_response_headers(response: requests.Response, operation_name: str) -> None:
-    content_type = (response.headers.get("Content-Type") or "").lower()
-    if (
-        content_type
-        and "application/pdf" not in content_type
-        and "application/octet-stream" not in content_type
-    ):
-        raise PDFValidationError(
-            f"Invalid content type during '{operation_name}': {content_type!r}. "
-            "Expected PDF response."
-        )
-
-
 def _validate_pdf_bytes(content: bytes, operation_name: str) -> None:
     if not content:
         raise PDFValidationError(f"Empty PDF body during '{operation_name}'.")
@@ -221,6 +160,19 @@ def get_pdf_integrity_metadata(pdf_path: Path) -> tuple[str, int]:
     _validate_pdf_bytes(content, f"validate existing file '{pdf_path.name}'")
     checksum = hashlib.sha256(content).hexdigest()
     return checksum, len(content)
+
+
+def _download_pdf_bytes_via_api_client(paper_id: str, operation_name: str) -> bytes:
+    """Download raw PDF bytes from the authenticated OpenReview API client."""
+    client = get_client()
+    content = _retry_openreview_call(operation_name, lambda: client.get_pdf(id=paper_id))
+    if not isinstance(content, (bytes, bytearray)):
+        raise PDFValidationError(
+            f"Unexpected API PDF payload type during '{operation_name}': {type(content)!r}"
+        )
+    content_bytes = bytes(content)
+    _validate_pdf_bytes(content_bytes, operation_name)
+    return content_bytes
 
 
 def get_client() -> openreview.api.OpenReviewClient:
@@ -363,7 +315,6 @@ def fetch_paper(paper_id: str) -> Paper | None:
 
 def download_pdf(paper_id: str, output_dir: Path) -> Path:
     """Download a paper's PDF to the specified directory."""
-    runtime_settings = get_settings()
     output_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = output_dir / f"{paper_id}.pdf"
 
@@ -371,12 +322,8 @@ def download_pdf(paper_id: str, output_dir: Path) -> Path:
         get_pdf_integrity_metadata(pdf_path)
         return pdf_path
 
-    url = f"{runtime_settings.openreview_web_url}/pdf?id={paper_id}"
     operation_name = f"download PDF for paper '{paper_id}'"
-    response = _retry_http_get(url, operation_name)
-    _validate_pdf_response_headers(response, operation_name)
-    content = response.content
-    _validate_pdf_bytes(content, operation_name)
+    content = _download_pdf_bytes_via_api_client(paper_id, operation_name)
 
     tmp_path_obj: Path | None = None
     tmp_file = tempfile.NamedTemporaryFile(
