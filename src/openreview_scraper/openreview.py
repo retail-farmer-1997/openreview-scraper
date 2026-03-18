@@ -133,13 +133,34 @@ class _OpenReviewRequestThrottle:
         self._lock = threading.Lock()
         self._next_request_at = 0.0
         self._blocked_until = 0.0
+        self._request_count = 0
+
+    def _wait_snapshot_unlocked(self, now: float) -> dict[str, object]:
+        spacing_seconds = max(self._next_request_at - now, 0.0)
+        rate_limit_seconds = max(self._blocked_until - now, 0.0)
+        throttle_reason = "idle"
+        throttle_seconds = 0.0
+        if rate_limit_seconds > 0:
+            throttle_reason = "rate-limit"
+            throttle_seconds = rate_limit_seconds
+        elif spacing_seconds > 0:
+            throttle_reason = "spacing"
+            throttle_seconds = spacing_seconds
+        return {
+            "throttle_active": throttle_seconds > 0,
+            "throttle_reason": throttle_reason,
+            "throttle_seconds": throttle_seconds,
+            "spacing_seconds": spacing_seconds,
+            "rate_limit_seconds": rate_limit_seconds,
+        }
 
     def acquire(self) -> None:
         while True:
             with self._lock:
                 now = time.monotonic()
                 min_interval = get_settings().openreview_min_request_interval_seconds
-                wait_seconds = max(self._next_request_at - now, self._blocked_until - now, 0.0)
+                wait_snapshot = self._wait_snapshot_unlocked(now)
+                wait_seconds = float(wait_snapshot["throttle_seconds"])
                 if wait_seconds <= 0:
                     if min_interval > 0:
                         self._next_request_at = max(self._next_request_at, now) + min_interval
@@ -161,10 +182,23 @@ class _OpenReviewRequestThrottle:
         self.block_for(wait_seconds)
         return wait_seconds
 
+    def record_request(self) -> None:
+        with self._lock:
+            self._request_count += 1
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            now = time.monotonic()
+            return {
+                "request_count": self._request_count,
+                **self._wait_snapshot_unlocked(now),
+            }
+
     def reset(self) -> None:
         with self._lock:
             self._next_request_at = 0.0
             self._blocked_until = 0.0
+            self._request_count = 0
 
 
 _OPENREVIEW_REQUEST_THROTTLE = _OpenReviewRequestThrottle()
@@ -173,6 +207,16 @@ _OPENREVIEW_CLIENT_LOCAL = threading.local()
 
 def _reset_request_throttle() -> None:
     _OPENREVIEW_REQUEST_THROTTLE.reset()
+
+
+def reset_request_metrics() -> None:
+    """Reset process-local OpenReview request counters and throttle state."""
+    _OPENREVIEW_REQUEST_THROTTLE.reset()
+
+
+def get_request_metrics_snapshot() -> dict[str, object]:
+    """Return request-count and throttle-state metrics for current process."""
+    return _OPENREVIEW_REQUEST_THROTTLE.snapshot()
 
 
 def _reset_client_cache() -> None:
@@ -245,6 +289,7 @@ def _install_request_throttle(client: Any) -> None:
 
     def throttled_request(method: str, url: str, *args, **kwargs):
         _OPENREVIEW_REQUEST_THROTTLE.acquire()
+        _OPENREVIEW_REQUEST_THROTTLE.record_request()
         response = original_request(method, url, *args, **kwargs)
         if getattr(response, "status_code", None) == 429:
             retry_after = response.headers.get("Retry-After")

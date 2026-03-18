@@ -275,6 +275,7 @@ def _emit_download_progress(
 def download_paper(
     paper_id: str,
     tags: str | None = None,
+    cache_forum: bool = True,
     progress_callback: DownloadProgressCallback | None = None,
 ) -> dict:
     """Download/reconcile PDF for a paper with idempotent metadata updates."""
@@ -388,7 +389,7 @@ def download_paper(
             updated_count += 1
             notes.append(f"saved:{artifact['path']}")
 
-        if db.get_paper_forum_cache(paper_id) is None:
+        if cache_forum and db.get_paper_forum_cache(paper_id) is None:
             try:
                 _emit_download_progress(
                     progress_callback,

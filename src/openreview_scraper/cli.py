@@ -91,6 +91,25 @@ def _format_phase_label(phase: str) -> str:
     return phase.replace("-", " ")
 
 
+def _format_throttle_label(request_observability: dict) -> str:
+    reason = str(request_observability.get("throttle_reason") or "idle")
+    wait_seconds = float(request_observability.get("throttle_seconds", 0.0) or 0.0)
+    if wait_seconds <= 0 or reason == "idle":
+        return "idle"
+    return f"{reason}({wait_seconds:.1f}s)"
+
+
+def _throttle_is_active(request_observability: dict) -> bool:
+    return bool(request_observability.get("throttle_active")) and (
+        float(request_observability.get("throttle_seconds", 0.0) or 0.0) > 0
+    )
+
+
+def _format_request_observability(request_observability: dict) -> str:
+    request_count = int(request_observability.get("request_count", 0) or 0)
+    return f"requests={request_count} throttle={_format_throttle_label(request_observability)}"
+
+
 def _format_recent_failure_line(failure: dict) -> str:
     paper_label = _truncate_text(
         str(failure.get("paper_title") or failure.get("paper_id") or "unknown-paper"),
@@ -152,6 +171,12 @@ class _DownloadDashboard:
             "target_jobs": 0,
             "counts": {"pending": 0, "running": 0, "completed": 0, "failed": 0},
             "recent_failures": [],
+            "request_observability": {
+                "request_count": 0,
+                "throttle_active": False,
+                "throttle_reason": "idle",
+                "throttle_seconds": 0.0,
+            },
             "metrics": {
                 "bytes_downloaded": 0,
                 "network_seconds": 0.0,
@@ -203,6 +228,8 @@ class _DownloadDashboard:
         failed = int(self._snapshot.get("failed", 0))
         failed_attempts = int(self._snapshot.get("failed_attempts", 0))
         recent_failures = list(self._snapshot.get("recent_failures", []))
+        request_observability = dict(self._snapshot.get("request_observability", {}))
+        request_style = "yellow" if _throttle_is_active(request_observability) else "dim"
 
         overall_lines = Group(
             Text(
@@ -244,6 +271,10 @@ class _DownloadDashboard:
                 f"completed={counts.get('completed', 0)} "
                 f"failed_jobs={counts.get('failed', 0)}",
                 style="dim",
+            ),
+            Text(
+                "OpenReview " + _format_request_observability(request_observability),
+                style=request_style,
             ),
         )
 
@@ -554,6 +585,11 @@ def worker_enqueue_downloads(limit: int | None, json_output: bool) -> None:
     type=click.IntRange(min=1),
     help="Stop after processing N jobs even if the queue is not empty",
 )
+@click.option(
+    "--cache-forum",
+    is_flag=True,
+    help="Also fetch and cache reviews/discussion while draining download jobs",
+)
 @click.option("--json-output", is_flag=True, help="Emit machine-readable JSON summary")
 def worker_run_downloads(
     enqueue_missing: bool,
@@ -562,6 +598,7 @@ def worker_run_downloads(
     workers: int,
     status_interval_seconds: float,
     max_jobs: int | None,
+    cache_forum: bool,
     json_output: bool,
 ) -> None:
     """Run background download jobs until the queue is drained or limits are reached."""
@@ -600,7 +637,8 @@ def worker_run_downloads(
             f"failed={snapshot['failed']} "
             f"failed_jobs={counts['failed']} "
             f"rate={_format_papers_rate(float(metrics.get('papers_per_minute', 0.0)))} "
-            f"bound={metrics.get('constraint', 'idle')}"
+            f"bound={metrics.get('constraint', 'idle')} "
+            f"{_format_request_observability(snapshot.get('request_observability', {}))}"
         )
         recent_failures = snapshot.get("recent_failures", [])
         signature = tuple(
@@ -622,6 +660,7 @@ def worker_run_downloads(
             continuous=True,
             poll_interval_seconds=poll_interval_seconds,
             max_jobs=max_jobs,
+            cache_forum=cache_forum,
         )
         summary["workers"] = 1
     else:
@@ -630,6 +669,7 @@ def worker_run_downloads(
                 summary = worker.run_parallel_download_workers(
                     worker_count=workers,
                     max_jobs=max_jobs,
+                    cache_forum=cache_forum,
                     status_interval_seconds=status_interval_seconds,
                     status_callback=dashboard.accept_snapshot,
                     progress_callback=dashboard.accept_event,
@@ -641,6 +681,7 @@ def worker_run_downloads(
             summary = worker.run_parallel_download_workers(
                 worker_count=workers,
                 max_jobs=max_jobs,
+                cache_forum=cache_forum,
                 status_interval_seconds=status_interval_seconds,
                 status_callback=status_callback,
             )
@@ -665,7 +706,8 @@ def worker_run_downloads(
         f"skipped={summary['skipped']} "
         f"rate={_format_papers_rate(float(summary.get('papers_per_minute', 0.0)))} "
         f"throughput={_format_rate(float(summary.get('bytes_per_second', 0.0)))} "
-        f"bound={summary.get('constraint', 'idle')}"
+        f"bound={summary.get('constraint', 'idle')} "
+        f"requests={int(summary.get('request_count', 0) or 0)}"
     )
     if summary.get("recent_failures"):
         click.echo("Recent failures:")

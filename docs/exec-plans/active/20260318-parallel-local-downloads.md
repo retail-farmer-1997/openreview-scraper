@@ -52,6 +52,9 @@ processed.
 - 2026-03-18: Normalized dict-like OpenReview library errors (for example `{'name': ..., 'message':
   ...}`) down to the human `message` text before storing worker failures or rendering dashboard
   status, so rate-limit diagnostics stay readable in the terminal.
+- 2026-03-18: Changed `worker run-downloads` to default to PDF-only reconciliation, with
+  `--cache-forum` as an explicit opt-in for reviews/discussion caching, and extended the live/plain
+  worker status to show OpenReview request counts plus active throttle countdowns.
 - 2026-03-18: Validation passed for the richer runner with `uv run python
   scripts/check_agent_docs.py`, `uv run python scripts/check_architecture.py`, and `uv run python
   scripts/run_repo_checks.py tests`.

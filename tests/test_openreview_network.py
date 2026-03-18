@@ -131,9 +131,41 @@ class OpenReviewNetworkTests(unittest.TestCase):
                         orw._install_request_throttle(fake_client)
                         fake_client.session.request("GET", "https://api2.openreview.net/notes")
                         fake_client.session.request("GET", "https://api2.openreview.net/notes")
+                        snapshot = orw.get_request_metrics_snapshot()
 
         self.assertEqual(fake_client.session.calls, [100.0, 102.5])
         self.assertEqual(clock.sleeps, [2.5])
+        self.assertEqual(snapshot["request_count"], 2)
+        self.assertTrue(snapshot["throttle_active"])
+        self.assertEqual(snapshot["throttle_reason"], "spacing")
+        self.assertEqual(snapshot["throttle_seconds"], 2.5)
+
+    def test_request_metrics_snapshot_reports_active_rate_limit_wait(self) -> None:
+        class FakeClock:
+            def __init__(self) -> None:
+                self.current = 200.0
+
+            def monotonic(self) -> float:
+                return self.current
+
+        clock = FakeClock()
+        env = {
+            "OPENREVIEW_SCRAPER_OPENREVIEW_RATE_LIMIT_BUFFER_SECONDS": "2",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            settings.reset_settings_cache()
+            with patch("openreview_scraper.openreview.time.monotonic", side_effect=clock.monotonic):
+                wait_seconds = orw._OPENREVIEW_REQUEST_THROTTLE.note_rate_limit(
+                    "Too many requests: Please try again in 7 seconds"
+                )
+                snapshot = orw.get_request_metrics_snapshot()
+
+        self.assertEqual(wait_seconds, 9.0)
+        self.assertEqual(snapshot["request_count"], 0)
+        self.assertTrue(snapshot["throttle_active"])
+        self.assertEqual(snapshot["throttle_reason"], "rate-limit")
+        self.assertEqual(snapshot["throttle_seconds"], 9.0)
 
     def test_rate_limit_retry_waits_until_reset_window(self) -> None:
         exc_cls = orw.openreview.OpenReviewException

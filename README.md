@@ -55,8 +55,11 @@ After fetching metadata into the local DB, queue and drain the missing PDFs loca
 that still need PDF work, runs local workers in parallel, and shows a live interactive dashboard on
 TTY terminals with per-worker paper progress plus an overall completion/utilization bar. Use
 `--status-interval-seconds 0` to disable periodic plain-text status snapshots or `--json-output`
-for machine-readable automation output. OpenReview requests are throttled conservatively by default
-so queue drains respect low server-side rate limits without requiring per-run flags.
+for machine-readable automation output. By default this worker flow only reconciles paper PDFs and
+does not fetch the full forum; pass `--cache-forum` if you also want reviews/discussion cached while
+draining the queue. OpenReview requests are throttled conservatively by default so queue drains
+respect low server-side rate limits without requiring per-run flags, and the live/plain-text worker
+status includes request counts plus any active throttle timer.
 
 No dashboard command belongs in this repo.
 

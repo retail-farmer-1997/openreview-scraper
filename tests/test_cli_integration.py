@@ -340,9 +340,11 @@ class CLIIntegrationTests(unittest.TestCase):
                 def fake_download(
                     paper_id: str,
                     tags: str | None = None,
+                    cache_forum: bool = True,
                     progress_callback=None,
                 ) -> dict:
                     del tags
+                    del cache_forum
                     del progress_callback
                     pdf_path = papers_dir / f"{paper_id}.pdf"
                     pdf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -385,6 +387,7 @@ class CLIIntegrationTests(unittest.TestCase):
             self.assertEqual(enqueue_summary["created"], 2)
             self.assertEqual(run_summary["processed"], 2)
             self.assertEqual(run_summary["completed"], 2)
+            self.assertEqual(run_summary["request_count"], 0)
             self.assertEqual(status_summary["counts"]["completed"], 2)
             self.assertEqual(status_summary["counts"]["pending"], 0)
             self.assertEqual(db_summary["papers"]["downloaded_recorded"], 2)
@@ -413,13 +416,17 @@ class CLIIntegrationTests(unittest.TestCase):
                         venueid="ICLR/2025",
                     )
 
+                cache_forum_values: list[bool] = []
+
                 def fake_download(
                     paper_id: str,
                     tags: str | None = None,
+                    cache_forum: bool = True,
                     progress_callback=None,
                 ) -> dict:
                     del tags
                     del progress_callback
+                    cache_forum_values.append(cache_forum)
                     pdf_path = papers_dir / f"{paper_id}.pdf"
                     pdf_path.parent.mkdir(parents=True, exist_ok=True)
                     pdf_path.write_bytes(b"%PDF-1.4 batch")
@@ -440,19 +447,42 @@ class CLIIntegrationTests(unittest.TestCase):
                         "notes": [f"saved:{pdf_path}"],
                     }
 
+                def fake_request_metrics() -> dict[str, object]:
+                    if cache_forum_values:
+                        return {
+                            "request_count": 7,
+                            "throttle_active": True,
+                            "throttle_reason": "rate-limit",
+                            "throttle_seconds": 6.5,
+                            "spacing_seconds": 0.0,
+                            "rate_limit_seconds": 6.5,
+                        }
+                    return {
+                        "request_count": 0,
+                        "throttle_active": False,
+                        "throttle_reason": "idle",
+                        "throttle_seconds": 0.0,
+                        "spacing_seconds": 0.0,
+                        "rate_limit_seconds": 0.0,
+                    }
+
                 with patch("openreview_scraper.worker.service.download_paper", side_effect=fake_download):
-                    run = self.runner.invoke(
-                        cli,
-                        [
-                            "worker",
-                            "run-downloads",
-                            "--enqueue-missing",
-                            "--workers",
-                            "2",
-                            "--status-interval-seconds",
-                            "0.01",
-                        ],
-                    )
+                    with patch(
+                        "openreview_scraper.worker.service.orw.get_request_metrics_snapshot",
+                        side_effect=fake_request_metrics,
+                    ):
+                        run = self.runner.invoke(
+                            cli,
+                            [
+                                "worker",
+                                "run-downloads",
+                                "--enqueue-missing",
+                                "--workers",
+                                "2",
+                                "--status-interval-seconds",
+                                "0.01",
+                            ],
+                        )
 
                 download_status = self.runner.invoke(cli, ["worker", "download-status", "--json-output"])
 
@@ -462,9 +492,81 @@ class CLIIntegrationTests(unittest.TestCase):
             self.assertIn("Starting 2 local download workers.", run.output)
             self.assertIn("Status: ", run.output)
             self.assertIn("bound=", run.output)
+            self.assertIn("requests=7", run.output)
+            self.assertIn("throttle=rate-limit(6.5s)", run.output)
             self.assertIn("Processed 3 download job(s): completed=3 failed=0", run.output)
+            self.assertEqual(cache_forum_values, [False, False, False])
             self.assertEqual(status_summary["counts"]["completed"], 3)
             self.assertEqual(status_summary["counts"]["pending"], 0)
+
+    def test_worker_run_downloads_can_opt_in_to_forum_caching(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "cli-parallel-download-worker-cache-forum.db"
+            papers_dir = Path(tmpdir) / "papers"
+            env = {
+                "OPENREVIEW_SCRAPER_DB_PATH": str(db_path),
+                "OPENREVIEW_SCRAPER_PAPERS_DIR": str(papers_dir),
+                "OPENREVIEW_SCRAPER_DOWNLOAD_JOB_LEASE_SECONDS": "60",
+            }
+
+            with patch.dict(os.environ, env, clear=False):
+                settings.reset_settings_cache()
+                db.migrate()
+                db.upsert_paper(
+                    paper_id="paper-cache-forum",
+                    title="Batch Paper paper-cache-forum",
+                    authors=["Alice"],
+                    abstract="A",
+                    venue="ICLR 2025 Oral",
+                    venueid="ICLR/2025",
+                )
+
+                cache_forum_values: list[bool] = []
+
+                def fake_download(
+                    paper_id: str,
+                    tags: str | None = None,
+                    cache_forum: bool = True,
+                    progress_callback=None,
+                ) -> dict:
+                    del tags
+                    del progress_callback
+                    cache_forum_values.append(cache_forum)
+                    pdf_path = papers_dir / f"{paper_id}.pdf"
+                    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+                    pdf_path.write_bytes(b"%PDF-1.4 cache-forum")
+                    db.update_pdf_metadata(
+                        paper_id=paper_id,
+                        pdf_path=str(pdf_path),
+                        pdf_sha256=f"sha-{paper_id}",
+                        pdf_size_bytes=len(b"%PDF-1.4 cache-forum"),
+                    )
+                    return {
+                        "operation": "download",
+                        "paper_id": paper_id,
+                        "created": 0,
+                        "updated": 1,
+                        "skipped": 0,
+                        "failed": 0,
+                        "failures": [],
+                        "notes": [f"saved:{pdf_path}"],
+                    }
+
+                with patch("openreview_scraper.worker.service.download_paper", side_effect=fake_download):
+                    run = self.runner.invoke(
+                        cli,
+                        [
+                            "worker",
+                            "run-downloads",
+                            "--enqueue-missing",
+                            "--cache-forum",
+                            "--status-interval-seconds",
+                            "0.01",
+                        ],
+                    )
+
+            self.assertEqual(run.exit_code, 0, run.output)
+            self.assertEqual(cache_forum_values, [True])
 
     def test_worker_run_downloads_surfaces_recent_failure_reasons(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -492,9 +594,11 @@ class CLIIntegrationTests(unittest.TestCase):
                 def fake_download(
                     paper_id: str,
                     tags: str | None = None,
+                    cache_forum: bool = True,
                     progress_callback=None,
                 ) -> dict:
                     del tags
+                    del cache_forum
                     del progress_callback
                     if paper_id == "paper-c2":
                         return {
@@ -573,6 +677,7 @@ class CLIIntegrationTests(unittest.TestCase):
             self.assertIn("Recent failures:", run.output)
             self.assertIn("forum-cache: Too many requests: discussion fetch failed", run.output)
             self.assertNotIn("{'name': 'RateLimitError'", run.output)
+            self.assertIn("requests=0 throttle=idle", run.output)
             self.assertIn("Processed 2 download job(s): completed=1 failed=1", run.output)
 
     def test_download_caches_forum_data_and_cli_reads_cache(self) -> None:

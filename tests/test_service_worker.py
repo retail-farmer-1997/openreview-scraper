@@ -126,14 +126,17 @@ class ServiceWorkerTests(unittest.TestCase):
                 )
 
                 enqueue = worker.enqueue_reconcile_download_requests()
+                cache_forum_values: list[bool] = []
 
                 def fake_download(
                     paper_id: str,
                     tags: str | None = None,
+                    cache_forum: bool = True,
                     progress_callback=None,
                 ) -> dict:
                     del tags
                     del progress_callback
+                    cache_forum_values.append(cache_forum)
                     pdf_path = papers_dir / f"{paper_id}.pdf"
                     pdf_path.parent.mkdir(parents=True, exist_ok=True)
                     pdf_path.write_bytes(b"%PDF-1.4 worker")
@@ -164,6 +167,8 @@ class ServiceWorkerTests(unittest.TestCase):
             self.assertEqual(result["processed"], 1)
             self.assertEqual(result["completed"], 1)
             self.assertEqual(result["failed"], 0)
+            self.assertEqual(result["request_count"], 0)
+            self.assertEqual(cache_forum_values, [False])
             self.assertEqual(queue_status["counts"]["completed"], 1)
             self.assertEqual(jobs[0]["paper_id"], "paper-download")
             self.assertEqual(jobs[0]["status"], "completed")
@@ -228,14 +233,17 @@ class ServiceWorkerTests(unittest.TestCase):
                 enqueue = worker.enqueue_reconcile_download_requests()
                 status_snapshots: list[dict] = []
                 progress_events: list[dict] = []
+                cache_forum_values: list[bool] = []
 
                 def fake_download(
                     paper_id: str,
                     tags: str | None = None,
+                    cache_forum: bool = True,
                     progress_callback=None,
                 ) -> dict:
                     del tags
                     del progress_callback
+                    cache_forum_values.append(cache_forum)
                     pdf_path = papers_dir / f"{paper_id}.pdf"
                     pdf_path.parent.mkdir(parents=True, exist_ok=True)
                     pdf_path.write_bytes(b"%PDF-1.4 parallel")
@@ -272,12 +280,16 @@ class ServiceWorkerTests(unittest.TestCase):
             self.assertEqual(result["failed"], 0)
             self.assertEqual(result["workers"], 2)
             self.assertEqual(result["target_jobs"], 3)
+            self.assertEqual(result["request_count"], 0)
             self.assertIn(result["constraint"], {"io", "mixed", "network", "other", "idle"})
             self.assertTrue(status_snapshots)
             self.assertGreaterEqual(status_snapshots[-1]["target_jobs"], 3)
             self.assertIn("constraint", status_snapshots[-1]["metrics"])
+            self.assertIn("request_observability", status_snapshots[-1])
+            self.assertEqual(status_snapshots[-1]["request_observability"]["request_count"], 0)
             self.assertTrue(progress_events)
             self.assertTrue(any(event["paper_title"].startswith("Queued") for event in progress_events))
+            self.assertEqual(cache_forum_values, [False, False, False])
             self.assertEqual(queue_status["counts"]["completed"], 3)
             self.assertEqual(queue_status["counts"]["pending"], 0)
 
@@ -306,14 +318,17 @@ class ServiceWorkerTests(unittest.TestCase):
 
                 worker.enqueue_reconcile_download_requests()
                 status_snapshots: list[dict] = []
+                cache_forum_values: list[bool] = []
 
                 def fake_download(
                     paper_id: str,
                     tags: str | None = None,
+                    cache_forum: bool = True,
                     progress_callback=None,
                 ) -> dict:
                     del tags
                     del progress_callback
+                    cache_forum_values.append(cache_forum)
                     if paper_id == "paper-fail":
                         return {
                             "operation": "download",
@@ -385,16 +400,19 @@ class ServiceWorkerTests(unittest.TestCase):
             self.assertEqual(summary["completed"], 1)
             self.assertEqual(summary["failed"], 1)
             self.assertEqual(summary["failed_attempts"], 1)
+            self.assertEqual(summary["request_count"], 0)
             self.assertEqual(summary["recent_failures"][0]["paper_id"], "paper-fail")
             self.assertEqual(
                 summary["recent_failures"][0]["error"],
                 "forum-cache: Too many requests: forum API unavailable",
             )
             self.assertTrue(status_snapshots)
+            self.assertEqual(status_snapshots[-1]["request_observability"]["request_count"], 0)
             self.assertEqual(
                 status_snapshots[-1]["recent_failures"][0]["error"],
                 "forum-cache: Too many requests: forum API unavailable",
             )
+            self.assertEqual(cache_forum_values, [False, False])
             failed_jobs = [job for job in queue_status["jobs"] if job["paper_id"] == "paper-fail"]
             self.assertTrue(failed_jobs)
             self.assertEqual(

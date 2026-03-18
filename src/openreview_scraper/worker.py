@@ -159,8 +159,13 @@ def _record_recent_failure(
         recent_failures.pop(oldest_paper_id, None)
 
 
+def _request_observability_snapshot() -> dict[str, object]:
+    return service.orw.get_request_metrics_snapshot()
+
+
 def run_next_download_job(
     *,
+    cache_forum: bool = False,
     progress_callback: DownloadProgressCallback | None = None,
 ) -> dict:
     """Run a single queued download job, if available."""
@@ -201,7 +206,11 @@ def run_next_download_job(
         }
     )
     try:
-        summary = service.download_paper(paper_id=paper_id, progress_callback=forward_progress)
+        summary = service.download_paper(
+            paper_id=paper_id,
+            cache_forum=cache_forum,
+            progress_callback=forward_progress,
+        )
         if summary["failed"] > 0:
             error = _download_failure_error(summary)
             db.fail_download_job(job_id, error)
@@ -282,12 +291,15 @@ def run_download_worker(
     continuous: bool = False,
     poll_interval_seconds: float = 5.0,
     max_jobs: int | None = None,
+    cache_forum: bool = False,
 ) -> dict:
     """Run download jobs until the queue is drained or limits are reached."""
     if poll_interval_seconds < 0:
         raise ValueError("poll_interval_seconds must be >= 0")
     if max_jobs is not None and max_jobs < 1:
         raise ValueError("max_jobs must be >= 1")
+
+    service.orw.reset_request_metrics()
 
     processed = 0
     completed = 0
@@ -301,7 +313,7 @@ def run_download_worker(
     recent_failures: dict[str, dict[str, object]] = {}
 
     while max_jobs is None or processed < max_jobs:
-        result = run_next_download_job()
+        result = run_next_download_job(cache_forum=cache_forum)
         last_result = result
 
         if not result["processed"]:
@@ -325,6 +337,7 @@ def run_download_worker(
                 failed += 1
             _record_recent_failure(recent_failures, result)
 
+    request_snapshot = _request_observability_snapshot()
     return {
         "operation": "run-downloads",
         "processed": processed,
@@ -343,6 +356,7 @@ def run_download_worker(
         "network_seconds": 0.0,
         "io_seconds": 0.0,
         "other_seconds": 0.0,
+        "request_count": int(request_snapshot["request_count"]),
     }
 
 
@@ -433,6 +447,7 @@ def run_parallel_download_workers(
     *,
     worker_count: int,
     max_jobs: int | None = None,
+    cache_forum: bool = False,
     status_interval_seconds: float = 5.0,
     status_callback: DownloadStatusCallback | None = None,
     progress_callback: DownloadProgressCallback | None = None,
@@ -445,6 +460,7 @@ def run_parallel_download_workers(
     if max_jobs is not None and max_jobs < 1:
         raise ValueError("max_jobs must be >= 1")
 
+    service.orw.reset_request_metrics()
     db.migrate()
 
     summary = {
@@ -466,6 +482,7 @@ def run_parallel_download_workers(
         "network_seconds": 0.0,
         "io_seconds": 0.0,
         "other_seconds": 0.0,
+        "request_count": 0,
     }
 
     if max_jobs == 0:
@@ -503,6 +520,7 @@ def run_parallel_download_workers(
         futures[
             executor.submit(
                 run_next_download_job,
+                cache_forum=cache_forum,
                 progress_callback=slot_progress_callback(slot_id),
             )
         ] = slot_id
@@ -533,6 +551,7 @@ def run_parallel_download_workers(
                     "io_seconds": float(summary["io_seconds"]),
                     "other_seconds": float(summary["other_seconds"]),
                 },
+                "request_observability": _request_observability_snapshot(),
                 "metrics": _build_download_metrics(
                     summary,
                     active_jobs=active_snapshot,
@@ -544,6 +563,7 @@ def run_parallel_download_workers(
     emit_status()
     if target_jobs == 0:
         summary.update(_build_download_metrics(summary, active_jobs=[], elapsed_seconds=0.0))
+        summary["request_count"] = int(_request_observability_snapshot()["request_count"])
         return summary
 
     initial_slots = min(worker_count, target_jobs)
@@ -577,6 +597,7 @@ def run_parallel_download_workers(
 
     elapsed_seconds = time.perf_counter() - started_at
     summary.update(_build_download_metrics(summary, active_jobs=[], elapsed_seconds=elapsed_seconds))
+    summary["request_count"] = int(_request_observability_snapshot()["request_count"])
     emit_status()
     return summary
 
