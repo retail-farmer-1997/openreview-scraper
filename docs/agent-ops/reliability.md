@@ -11,11 +11,11 @@ Status: Active
 - Partial failures are recoverable without manual data surgery.
 
 ## Operational Checks
-- `python3 scripts/run_repo_checks.py tests` must stay green on a clean clone with no pre-existing state.
+- `uv run python scripts/run_repo_checks.py all` must stay green on a clean clone with no pre-existing state.
 - `tests/test_bootstrap_local_cli.py` guards the repo-local launcher bootstrap and stale-venv detection flow.
 - `tests/test_cli_contract.py` guards the command surface so refactors do not silently drop commands or groups.
-- Packaging verification workflows must smoke-test installed wheel and sdist artifacts so release
-  regressions are caught before publication.
+- `scripts/run_packaging_smoke.py` and the packaging/release workflows must smoke-test installed
+  wheel and sdist artifacts so release regressions are caught before publication.
 - When fetch/download code lands, add rerun tests that confirm idempotent DB/file outcomes before merging.
 - When PDF persistence lands, add explicit partial-write/corrupt-file detection tests before enabling background download workers.
 

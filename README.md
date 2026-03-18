@@ -166,10 +166,7 @@ python3 -m pip uninstall openreview-scraper
 ## Validation
 
 ```bash
-uv run python scripts/check_agent_docs.py
-uv run python scripts/check_architecture.py
-uv run python scripts/run_repo_checks.py tests
-uv run python scripts/run_repo_checks.py packaging
+uv run python scripts/run_repo_checks.py all
 ```
 
 ## Repo Guide
@@ -177,4 +174,5 @@ uv run python scripts/run_repo_checks.py packaging
 - [AGENTS.md](AGENTS.md)
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [Agent Ops Index](docs/agent-ops/index.md)
+- [Release Process](docs/release-process.md)
 - [Tech Debt Tracker](docs/exec-plans/tech-debt-tracker.md)

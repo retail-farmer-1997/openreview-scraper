@@ -8,6 +8,7 @@ priorities; agents execute implementation.
 - Read [README.md](README.md) for the current repo scope and bootstrap flow.
 - Read [docs/agent-ops/index.md](docs/agent-ops/index.md) for the operating model.
 - Read [docs/agent-ops/pr-loop.md](docs/agent-ops/pr-loop.md) before opening PRs.
+- Read [docs/release-process.md](docs/release-process.md) when the task touches packaging, versioning, tags, or publication.
 - Read [docs/exec-plans/tech-debt-tracker.md](docs/exec-plans/tech-debt-tracker.md) before large refactors.
 - Read [.agents/skills/linear-project/SKILL.md](.agents/skills/linear-project/SKILL.md) when the task touches Linear issues, milestones, project status, release planning, or GitHub/PR linkage.
 
@@ -44,9 +45,7 @@ priorities; agents execute implementation.
 Run:
 
 ```bash
-uv run python scripts/check_agent_docs.py
-uv run python scripts/check_architecture.py
-uv run python scripts/run_repo_checks.py tests
+uv run python scripts/run_repo_checks.py all
 ```
 
 If the repo layout changes, update `agent-harness.json` so the docs contract stays accurate.

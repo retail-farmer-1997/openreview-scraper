@@ -10,9 +10,8 @@
 - [ ] Criteria 2
 
 ## Validation
-- [ ] `python3 scripts/check_agent_docs.py`
-- [ ] `python3 scripts/run_repo_checks.py tests`
-- [ ] Relevant architecture, lint, type, and security checks (list command and output summary)
+- [ ] `uv run python scripts/run_repo_checks.py all`
+- [ ] Additional authenticated, lint, type, or security checks if the change touched those surfaces (list command and output summary)
 
 ## Docs and Plans
 - [ ] Updated docs if behavior or constraints changed

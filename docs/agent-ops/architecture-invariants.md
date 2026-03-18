@@ -14,6 +14,7 @@ Status: Active
 - No module in this repo may import dashboard/UI code from the source repo.
 
 ## Enforcement
-- `python3 scripts/check_architecture.py` is the current enforcement mechanism.
-- `python3 scripts/run_repo_checks.py guardrails` should remain the canonical entrypoint once CI is added.
+- `uv run python scripts/check_architecture.py` is the direct enforcement mechanism.
+- `uv run python scripts/run_repo_checks.py guardrails` is the focused guardrail entrypoint.
+- `uv run python scripts/run_repo_checks.py all` is the canonical PR and release gate.
 - If new cross-cutting modules are introduced, update both this document and the script in the same PR.

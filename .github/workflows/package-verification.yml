@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  build-and-smoke:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -25,31 +25,8 @@ jobs:
       - name: Sync locked packaging toolchain
         run: uv sync --group packaging --locked
 
-      - name: Confirm dynamic version contract
-        run: |
-          set -euo pipefail
-          uv run python - <<'PY'
-          from pathlib import Path
-          import re
-          import tomllib
-
-          pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-          dynamic = pyproject["project"].get("dynamic", [])
-          if "version" not in dynamic:
-              raise SystemExit("pyproject.toml must declare a dynamic project.version")
-          version_attr = pyproject["tool"]["setuptools"]["dynamic"]["version"]["attr"]
-          if version_attr != "openreview_scraper.__version__":
-              raise SystemExit(
-                  "pyproject.toml must source project.version from openreview_scraper.__version__"
-              )
-          init_text = Path("src/openreview_scraper/__init__.py").read_text(encoding="utf-8")
-          match = re.search(r'__version__ = "([^"]+)"', init_text)
-          if match is None:
-              raise SystemExit("could not find __version__ in src/openreview_scraper/__init__.py")
-          PY
-
-      - name: Build and smoke-test distributions
-        run: uv run python scripts/run_packaging_smoke.py --dist-dir dist
+      - name: Run repo validation
+        run: uv run python scripts/run_repo_checks.py all
 
       - name: Upload verified distributions
         uses: actions/upload-artifact@v4

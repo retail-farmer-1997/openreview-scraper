@@ -19,9 +19,8 @@ Status: Active
 - Keep Linear issue status aligned with actual work state; do not rely on PR draft/open state as an implicit status update.
 
 ## Required Local Checks
-- `python3 scripts/check_agent_docs.py`
-- `python3 scripts/check_architecture.py`
-- `python3 scripts/run_repo_checks.py tests`
+- `uv run python scripts/run_repo_checks.py all`
+- Additional authenticated or live smoke checks when the change touches external services.
 - Additional lint, type, and security checks once those tools are added to `scripts/run_repo_checks.py`.
 
 ## Escalation Conditions

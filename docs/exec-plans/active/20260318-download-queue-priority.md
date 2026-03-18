@@ -18,9 +18,7 @@ oral, then spotlight, then poster, then everything else.
 
 ## Validation
 - `uv run python -m pytest tests/test_migrations.py tests/test_db_integration.py tests/test_cli_integration.py`
-- `uv run python scripts/check_agent_docs.py`
-- `uv run python scripts/check_architecture.py`
-- `uv run python scripts/run_repo_checks.py tests`
+- `uv run python scripts/run_repo_checks.py all`
 
 ## Status Log
 - 2026-03-18: Confirmed the existing queue is FIFO only: reconcile candidates are ordered by paper `created_at` and download workers claim jobs by job `created_at`.

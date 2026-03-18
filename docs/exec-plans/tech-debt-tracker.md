@@ -5,8 +5,8 @@ Last Reviewed: 2026-03-18
 Status: Active
 
 ## Active Debt
-- CI is partially wired: packaging verification and release publication workflows now cover the
-  packaging slice, but the broader lint and test matrix still needs remote enforcement.
+- CI now enforces the repo-local guardrails, tests, and packaging smoke flow, but lint, type, and
+  dependency-audit checks still need to be added to the remote gate.
 - Legacy `RESEARCH_*` environment-variable compatibility is still enabled; remove it after downstream callers migrate to `OPENREVIEW_SCRAPER_*`.
 - Lint, type-check, and dependency-audit tooling still need to be wired now that the runtime port introduced third-party dependencies.
 

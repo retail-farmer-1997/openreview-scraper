@@ -28,9 +28,22 @@ def run_tests() -> None:
     _run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
 
 
+def run_packaging() -> None:
+    _run(
+        [
+            sys.executable,
+            "scripts/run_packaging_smoke.py",
+            "--dist-dir",
+            "dist",
+            "--smoke-dir",
+            "build/packaging-smoke",
+        ]
+    )
+
+
 CHECKS: dict[str, Callable[[], None]] = {
     "guardrails": run_guardrails,
-    "packaging": lambda: _run([sys.executable, "scripts/run_packaging_smoke.py"]),
+    "packaging": run_packaging,
     "tests": run_tests,
 }
 

@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import zipfile
 
 
@@ -20,6 +22,7 @@ MIGRATIONS_DIR = ROOT / "src" / "openreview_scraper" / "migrations"
 DIST_DIR_NAME = "dist"
 BUILD_DIR_NAME = "build"
 PACKAGING_GROUP = "packaging"
+VERSION_ATTR = "openreview_scraper.__version__"
 
 
 class PackagingSmokeError(RuntimeError):
@@ -42,6 +45,36 @@ def _uv_binary() -> str:
 def _run(command: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> None:
     print(f"$ {' '.join(command)}")
     subprocess.run(command, cwd=cwd, env=env, check=True)
+
+
+def _check_packaging_contract(root: Path = ROOT) -> str:
+    pyproject_path = root / "pyproject.toml"
+    init_path = root / "src" / "openreview_scraper" / "__init__.py"
+
+    pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    project = pyproject.get("project", {})
+    dynamic = project.get("dynamic", [])
+    if "version" not in dynamic:
+        raise PackagingSmokeError("pyproject.toml must declare project.version as dynamic")
+
+    version_config = (
+        pyproject.get("tool", {})
+        .get("setuptools", {})
+        .get("dynamic", {})
+        .get("version", {})
+    )
+    if version_config.get("attr") != VERSION_ATTR:
+        raise PackagingSmokeError(
+            f"pyproject.toml must source project.version from {VERSION_ATTR}"
+        )
+
+    init_text = init_path.read_text(encoding="utf-8")
+    match = re.search(r'^__version__ = "([^"]+)"$', init_text, re.MULTILINE)
+    if match is None:
+        raise PackagingSmokeError(
+            "src/openreview_scraper/__init__.py must define __version__ as a simple string literal"
+        )
+    return match.group(1)
 
 
 def _remove_existing_build_outputs(dist_dir: Path) -> None:
@@ -183,16 +216,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Optional directory to write built artifacts into; defaults to a temporary directory.",
     )
+    parser.add_argument(
+        "--smoke-dir",
+        type=Path,
+        default=None,
+        help="Optional directory for isolated install smoke workspaces; defaults near --dist-dir or a temp dir.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
+        _check_packaging_contract()
         if args.dist_dir is None:
             with tempfile.TemporaryDirectory(prefix="openreview-packaging-") as tmpdir:
                 dist_dir = Path(tmpdir) / DIST_DIR_NAME
-                smoke_dir = Path(tmpdir) / "smoke"
+                smoke_dir = args.smoke_dir or (Path(tmpdir) / "smoke")
                 artifacts = _build_artifacts(dist_dir)
                 _check_artifact_metadata(artifacts)
                 for artifact in artifacts:
@@ -200,7 +240,9 @@ def main(argv: list[str] | None = None) -> int:
                     _smoke_installed_artifact(artifact, smoke_dir)
         else:
             dist_dir = args.dist_dir
-            smoke_dir = dist_dir.parent / "smoke"
+            smoke_dir = args.smoke_dir or (ROOT / BUILD_DIR_NAME / "packaging-smoke")
+            if smoke_dir.exists():
+                shutil.rmtree(smoke_dir)
             artifacts = _build_artifacts(dist_dir)
             _check_artifact_metadata(artifacts)
             for artifact in artifacts:

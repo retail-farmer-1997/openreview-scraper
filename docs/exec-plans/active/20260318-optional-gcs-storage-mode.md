@@ -94,9 +94,7 @@ verified bucket `gs://openreview-scraper-data/` without changing the default loc
 - Add CLI integration coverage for a representative read-only command and a representative mutating
   command in `gcs-sync` mode using a fake storage adapter.
 - Run:
-  `uv run python scripts/check_agent_docs.py`
-  `uv run python scripts/check_architecture.py`
-  `uv run python scripts/run_repo_checks.py tests`
+  `uv run python scripts/run_repo_checks.py all`
 
 ## Status Log
 - 2026-03-18: Verified the signed-in GCP account as `flyinpenguin669@gmail.com`, the active

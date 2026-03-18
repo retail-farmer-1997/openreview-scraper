@@ -11,7 +11,8 @@ Status: Active
 - Keep external input handling explicit and validated.
 
 ## Scan Cadence
-- Until CI is wired, dependency additions require explicit review in the PR and a note in the validation section.
+- CI now enforces the docs contract, architecture checks, test suite, and packaging smoke flow on pull requests and release verification.
+- Dependency additions still require explicit review in the PR and a note in the validation section until a dedicated dependency-audit command is wired.
 - No accepted vulnerability baseline is recorded yet; if one becomes necessary, track it in-repo with a dedicated script and review cadence.
 - Once third-party runtime dependencies are added beyond the scaffold, add a dependency-audit command to `scripts/run_repo_checks.py` and make failures block merges.
 

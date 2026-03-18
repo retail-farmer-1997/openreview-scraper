@@ -77,8 +77,8 @@ jobs:
         env:
           RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
 
-      - name: Build and smoke-test distributions
-        run: uv run python scripts/run_packaging_smoke.py --dist-dir dist
+      - name: Run repo validation
+        run: uv run python scripts/run_repo_checks.py all
 
       - name: Upload distributions for publication
         uses: actions/upload-artifact@v4

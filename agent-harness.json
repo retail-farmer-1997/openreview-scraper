@@ -7,6 +7,10 @@
       "README.md",
       "pyproject.toml",
       "agent-harness.json",
+      ".github/ISSUE_TEMPLATE/agent-task.yml",
+      ".github/pull_request_template.md",
+      ".github/workflows/package-verification.yml",
+      ".github/workflows/release-publish.yml",
       ".agents/skills/linear-project/SKILL.md",
       ".agents/skills/linear-project/agents/openai.yaml",
       ".agents/skills/linear-project/references/project-map.md",
@@ -21,6 +25,7 @@
       "docs/agent-ops/testing.md",
       "docs/agent-ops/reliability.md",
       "docs/agent-ops/security.md",
+      "docs/release-process.md",
       "docs/exec-plans/tech-debt-tracker.md"
     ],
     "required_agent_links": [
@@ -28,6 +33,7 @@
       ".agents/skills/linear-project/SKILL.md",
       "docs/agent-ops/index.md",
       "docs/agent-ops/pr-loop.md",
+      "docs/release-process.md",
       "docs/exec-plans/tech-debt-tracker.md"
     ],
     "metadata_files": [
@@ -41,6 +47,7 @@
       "docs/agent-ops/testing.md",
       "docs/agent-ops/reliability.md",
       "docs/agent-ops/security.md",
+      "docs/release-process.md",
       "docs/exec-plans/tech-debt-tracker.md"
     ],
     "link_check_files": [
@@ -60,6 +67,7 @@
       "docs/agent-ops/testing.md",
       "docs/agent-ops/reliability.md",
       "docs/agent-ops/security.md",
+      "docs/release-process.md",
       "docs/exec-plans/tech-debt-tracker.md"
     ],
     "required_metadata_keys": ["Owner:", "Last Reviewed:", "Status:"]

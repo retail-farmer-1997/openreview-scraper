@@ -9,10 +9,13 @@ This repository ships `openreview-scraper` as a Python CLI package while keeping
 `./openreview-scraper` bootstrap path available for contributors.
 
 ## Workflow Files
-- `.github/workflows/package-verification.yml` checks pull requests and manual runs by building
-  `sdist` and `wheel` artifacts, checking their metadata, and smoke-testing fresh installs through
-  `scripts/run_packaging_smoke.py`.
+- `.github/workflows/package-verification.yml` checks pull requests and manual runs by running
+  `uv run python scripts/run_repo_checks.py all`, which includes the docs guardrails, test suite,
+  and packaging smoke flow.
 - `.github/workflows/release-publish.yml` handles tag-driven publication with trusted publishing.
+
+## Canonical Validation Command
+- `uv run python scripts/run_repo_checks.py all` is the repo-local validation gate for PRs and release verification.
 
 ## Tagging Rules
 - Cut releases from a merged commit on `main`.

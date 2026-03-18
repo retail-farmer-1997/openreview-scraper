@@ -28,4 +28,4 @@ Score each domain from 0-5 on a regular cadence.
 - Test coverage: 2
 - Reliability: 1
 - Security posture: 1
-- CI/CD maturity: 0
+- CI/CD maturity: 2

@@ -26,9 +26,7 @@ surface.
 - Source tests assume a larger repo context; some will need to be rewritten rather than copied.
 
 ## Validation
-- `python3 scripts/check_agent_docs.py`
-- `python3 scripts/check_architecture.py`
-- `python3 scripts/run_repo_checks.py tests`
+- `uv run python scripts/run_repo_checks.py all`
 
 ## Dependency-Ordered Task List
 

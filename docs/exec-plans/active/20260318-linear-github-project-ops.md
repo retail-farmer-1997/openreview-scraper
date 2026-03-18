@@ -19,9 +19,7 @@ external memory systems.
 
 ## Validation
 - `python3 /Users/narayansrinivasan/.agents/skills/.system/skill-creator/scripts/quick_validate.py .agents/skills/linear-project`
-- `python3 scripts/check_agent_docs.py`
-- `python3 scripts/check_architecture.py`
-- `python3 scripts/run_repo_checks.py tests`
+- `uv run python scripts/run_repo_checks.py all`
 
 ## Status Log
 - 2026-03-18: Audited the repo docs and confirmed there were no in-repo Notion references to remove; the migration is primarily an explicit policy clarification plus new repo-local skill support.

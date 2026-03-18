@@ -5,16 +5,16 @@ Last Reviewed: 2026-03-18
 Status: Active
 
 ## Test Command
-- Local and CI baseline: `python3 scripts/run_repo_checks.py tests`
-- Packaging release check: `python3 scripts/run_repo_checks.py packaging`
+- Local and CI baseline: `uv run python scripts/run_repo_checks.py all`
+- Faster iteration loop when packaging is unchanged: `uv run python scripts/run_repo_checks.py tests`
 
 ## Scope Baseline
 - Bootstrap tests cover repo-local CLI launcher behavior in `tests/test_bootstrap_local_cli.py`.
 - CLI contract tests cover the planned command surface in `tests/test_cli_contract.py`.
-- Packaging verification workflows should exercise built `sdist` and `wheel` installs plus the
+- Packaging validation should exercise built `sdist` and `wheel` installs plus the
   `openreview-scraper --help`, `--version`, and `db status` smoke path without depending on
   `PYTHONPATH=src`.
-- Guardrail coverage is enforced separately by `python3 scripts/check_agent_docs.py` and `python3 scripts/check_architecture.py`.
+- Guardrail coverage is enforced through `uv run python scripts/run_repo_checks.py guardrails`.
 - Future feature slices must add database, OpenReview client, service, and worker integration tests alongside implementation.
 
 ## Determinism Rules
@@ -28,5 +28,5 @@ Status: Active
 
 ## Workflow
 1. Add or update tests in the same change as behavior changes.
-2. Run the baseline test command locally before push.
+2. Run the baseline validation command locally before push.
 3. Keep fixtures and mocks minimal, explicit, and local to the tests that use them.

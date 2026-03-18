@@ -40,10 +40,7 @@ architecture boundaries.
   not regress while end-user installation improves.
 
 ## Validation
-- `uv run python scripts/check_agent_docs.py`
-- `uv run python scripts/check_architecture.py`
-- `uv run python scripts/run_repo_checks.py tests`
-- `uv run python scripts/run_repo_checks.py packaging`
+- `uv run python scripts/run_repo_checks.py all`
 - `uv run python scripts/run_packaging_smoke.py --dist-dir dist`
 - New installed-artifact smoke validation that creates a clean environment, installs the built
   package, and verifies `openreview-scraper --help`, `--version`, and `db status` work without
@@ -116,3 +113,6 @@ architecture boundaries.
   checks.
 - 2026-03-18: Documented end-user `pipx`/`pip` install flows and updated release automation to run
   the repo-local packaging smoke script with the locked packaging toolchain.
+- 2026-03-18: Unified the repo-local and CI validation flow around
+  `uv run python scripts/run_repo_checks.py all`, and moved the dynamic version contract check into
+  the packaging smoke script so release verification no longer depends on workflow-only logic.

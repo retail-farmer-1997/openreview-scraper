@@ -32,9 +32,7 @@ until the server stops pushing back.
 - New observability fields must remain additive so existing CLI/test consumers keep working.
 
 ## Validation
-- `uv run python scripts/check_agent_docs.py`
-- `uv run python scripts/check_architecture.py`
-- `uv run python scripts/run_repo_checks.py tests`
+- `uv run python scripts/run_repo_checks.py all`
 
 ## Status Log
 - 2026-03-18: Confirmed the repo already has a process-local request throttle plus explicit
