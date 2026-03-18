@@ -5,7 +5,8 @@ Last Reviewed: 2026-03-18
 Status: Active
 
 ## Active Debt
-- CI is not wired yet; local guardrail and test entrypoints exist but are not enforced remotely.
+- CI is partially wired: packaging verification and release publication workflows now cover the
+  packaging slice, but the broader lint and test matrix still needs remote enforcement.
 - Legacy `RESEARCH_*` environment-variable compatibility is still enabled; remove it after downstream callers migrate to `OPENREVIEW_SCRAPER_*`.
 - Lint, type-check, and dependency-audit tooling still need to be wired now that the runtime port introduced third-party dependencies.
 

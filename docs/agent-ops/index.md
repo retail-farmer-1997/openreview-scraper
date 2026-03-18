@@ -18,4 +18,5 @@ This directory is the system of record for how agents should operate in `openrev
 
 ## Related
 - [Architecture](../architecture.md)
+- [Release Process](../release-process.md)
 - [Tech Debt Tracker](../exec-plans/tech-debt-tracker.md)

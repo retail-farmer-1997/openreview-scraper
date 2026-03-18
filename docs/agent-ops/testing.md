@@ -10,6 +10,9 @@ Status: Active
 ## Scope Baseline
 - Bootstrap tests cover repo-local CLI launcher behavior in `tests/test_bootstrap_local_cli.py`.
 - CLI contract tests cover the planned command surface in `tests/test_cli_contract.py`.
+- Packaging verification workflows should exercise built `sdist` and `wheel` installs plus the
+  `openreview-scraper --help`, `--version`, and `db status` smoke path without depending on
+  `PYTHONPATH=src`.
 - Guardrail coverage is enforced separately by `python3 scripts/check_agent_docs.py` and `python3 scripts/check_architecture.py`.
 - Future feature slices must add database, OpenReview client, service, and worker integration tests alongside implementation.
 
