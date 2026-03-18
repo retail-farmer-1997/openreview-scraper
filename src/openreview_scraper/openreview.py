@@ -41,6 +41,36 @@ class PDFValidationError(NetworkOperationError):
     """Raised when downloaded PDF content fails validation."""
 
 
+def format_error_message(error: Any) -> str:
+    """Normalize OpenReview/library errors into a concise human-readable message."""
+    if isinstance(error, BaseException):
+        if len(error.args) == 1:
+            return format_error_message(error.args[0])
+        return str(error)
+
+    if isinstance(error, dict):
+        message = error.get("message")
+        if message not in (None, ""):
+            return format_error_message(message)
+        fallback = error.get("error")
+        if fallback not in (None, ""):
+            return format_error_message(fallback)
+        name = error.get("name")
+        if name not in (None, ""):
+            return str(name)
+        return str(error)
+
+    text = str(error).strip()
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            parsed = ast.literal_eval(text)
+        except (SyntaxError, ValueError):
+            return text
+        if isinstance(parsed, dict):
+            return format_error_message(parsed)
+    return text
+
+
 def _parse_rate_limit_payload(message: str) -> dict[str, object] | None:
     stripped = message.strip()
     if not stripped.startswith("{") or not stripped.endswith("}"):
@@ -244,7 +274,7 @@ def _retry_openreview_call(
         try:
             return operation()
         except openreview.OpenReviewException as exc:
-            message = str(exc)
+            message = format_error_message(exc)
             is_last_attempt = attempt == max_attempts - 1
 
             if allow_not_found and _is_not_found(message):

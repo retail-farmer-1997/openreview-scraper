@@ -91,6 +91,17 @@ def _format_phase_label(phase: str) -> str:
     return phase.replace("-", " ")
 
 
+def _format_recent_failure_line(failure: dict) -> str:
+    paper_label = _truncate_text(
+        str(failure.get("paper_title") or failure.get("paper_id") or "unknown-paper"),
+        72,
+    )
+    error = str(failure.get("error") or "download failed")
+    attempts = int(failure.get("attempts", 0) or 0)
+    attempt_suffix = f" [attempt {attempts}]" if attempts > 1 else ""
+    return f"{paper_label}{attempt_suffix}: {error}"
+
+
 def _job_progress_ratio(job: dict) -> float | None:
     phase = str(job.get("phase") or "")
     total_bytes = job.get("total_bytes")
@@ -137,8 +148,10 @@ class _DownloadDashboard:
             "processed": 0,
             "completed": 0,
             "failed": 0,
+            "failed_attempts": 0,
             "target_jobs": 0,
             "counts": {"pending": 0, "running": 0, "completed": 0, "failed": 0},
+            "recent_failures": [],
             "metrics": {
                 "bytes_downloaded": 0,
                 "network_seconds": 0.0,
@@ -186,6 +199,10 @@ class _DownloadDashboard:
         counts = dict(self._snapshot.get("counts", {}))
         processed = int(self._snapshot.get("processed", 0))
         target_jobs = int(self._snapshot.get("target_jobs", 0) or 0)
+        completed = int(self._snapshot.get("completed", 0))
+        failed = int(self._snapshot.get("failed", 0))
+        failed_attempts = int(self._snapshot.get("failed_attempts", 0))
+        recent_failures = list(self._snapshot.get("recent_failures", []))
 
         overall_lines = Group(
             Text(
@@ -216,11 +233,16 @@ class _DownloadDashboard:
                 style="dim",
             ),
             Text(
+                f"run completed={completed} failed={failed}"
+                + (f" failed_attempts={failed_attempts}" if failed_attempts else ""),
+                style="dim",
+            ),
+            Text(
                 "queue "
                 f"pending={counts.get('pending', 0)} "
                 f"running={counts.get('running', 0)} "
                 f"completed={counts.get('completed', 0)} "
-                f"failed={counts.get('failed', 0)}",
+                f"failed_jobs={counts.get('failed', 0)}",
                 style="dim",
             ),
         )
@@ -262,10 +284,22 @@ class _DownloadDashboard:
                 Text(transfer_text, style="green"),
             )
 
-        return Group(
+        renderables: list[object] = [
             Panel(overall_lines, title="Download Queue", border_style="cyan"),
             workers_table,
-        )
+        ]
+        if recent_failures:
+            failure_lines = Group(
+                *[
+                    Text(_format_recent_failure_line(failure), style="red")
+                    for failure in recent_failures
+                ]
+            )
+            renderables.append(
+                Panel(failure_lines, title="Recent Failures", border_style="red")
+            )
+
+        return Group(*renderables)
 
 
 def _ensure_db_migrated() -> None:
@@ -550,7 +584,10 @@ def worker_run_downloads(
     if not json_output and not continuous and workers > 1 and not rich_live_enabled:
         click.echo(f"Starting {workers} local download workers.")
 
+    last_failure_signature: tuple[tuple[str, str, int], ...] = ()
+
     def emit_status(snapshot: dict) -> None:
+        nonlocal last_failure_signature
         counts = snapshot["counts"]
         metrics = snapshot.get("metrics", {})
         target_jobs = snapshot.get("target_jobs") or snapshot["processed"]
@@ -560,10 +597,25 @@ def worker_run_downloads(
             f"pending={counts['pending']} "
             f"running={counts['running']} "
             f"completed={counts['completed']} "
-            f"failed={counts['failed']} "
+            f"failed={snapshot['failed']} "
+            f"failed_jobs={counts['failed']} "
             f"rate={_format_papers_rate(float(metrics.get('papers_per_minute', 0.0)))} "
             f"bound={metrics.get('constraint', 'idle')}"
         )
+        recent_failures = snapshot.get("recent_failures", [])
+        signature = tuple(
+            (
+                str(failure.get("paper_id") or ""),
+                str(failure.get("error") or ""),
+                int(failure.get("attempts", 0) or 0),
+            )
+            for failure in recent_failures
+        )
+        if recent_failures and signature != last_failure_signature:
+            click.echo("Recent failures:")
+            for failure in recent_failures:
+                click.echo(f"  {_format_recent_failure_line(failure)}")
+        last_failure_signature = signature
 
     if continuous:
         summary = worker.run_download_worker(
@@ -615,6 +667,10 @@ def worker_run_downloads(
         f"throughput={_format_rate(float(summary.get('bytes_per_second', 0.0)))} "
         f"bound={summary.get('constraint', 'idle')}"
     )
+    if summary.get("recent_failures"):
+        click.echo("Recent failures:")
+        for failure in summary["recent_failures"]:
+            click.echo(f"  {_format_recent_failure_line(failure)}")
 
 
 @worker_commands.command("download-status")

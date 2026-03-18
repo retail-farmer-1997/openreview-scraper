@@ -385,6 +385,33 @@ class OpenReviewNetworkTests(unittest.TestCase):
 
         self.assertIn("Rate-limited during 'download PDF for paper 'paper-429''", str(ctx.exception))
 
+    def test_download_pdf_rate_limit_normalizes_dict_like_library_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            exc_cls = orw.openreview.OpenReviewException
+
+            class FakeClient:
+                def get_pdf(self, _paper_id: str) -> bytes:
+                    raise exc_cls(
+                        "{'name': 'RateLimitError', 'message': 'Too many requests: slow down'}"
+                    )
+
+            env = {
+                "OPENREVIEW_SCRAPER_HTTP_MAX_RETRIES": "0",
+            }
+
+            with patch.dict(os.environ, env, clear=False):
+                settings.reset_settings_cache()
+                with patch("openreview_scraper.openreview.get_client", return_value=FakeClient()):
+                    with self.assertRaises(orw.RateLimitError) as ctx:
+                        orw.download_pdf("paper-429-dict", output_dir)
+
+        self.assertIn(
+            "Rate-limited during 'download PDF for paper 'paper-429-dict''",
+            str(ctx.exception),
+        )
+        self.assertNotIn("{'name':", str(ctx.exception))
+
     def test_download_pdf_retries_timeout_then_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)

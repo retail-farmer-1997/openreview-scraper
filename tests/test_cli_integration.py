@@ -466,6 +466,115 @@ class CLIIntegrationTests(unittest.TestCase):
             self.assertEqual(status_summary["counts"]["completed"], 3)
             self.assertEqual(status_summary["counts"]["pending"], 0)
 
+    def test_worker_run_downloads_surfaces_recent_failure_reasons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "cli-parallel-download-worker-failures.db"
+            papers_dir = Path(tmpdir) / "papers"
+            env = {
+                "OPENREVIEW_SCRAPER_DB_PATH": str(db_path),
+                "OPENREVIEW_SCRAPER_PAPERS_DIR": str(papers_dir),
+                "OPENREVIEW_SCRAPER_DOWNLOAD_JOB_LEASE_SECONDS": "60",
+            }
+
+            with patch.dict(os.environ, env, clear=False):
+                settings.reset_settings_cache()
+                db.migrate()
+                for paper_id in ("paper-c1", "paper-c2"):
+                    db.upsert_paper(
+                        paper_id=paper_id,
+                        title=f"CLI Paper {paper_id}",
+                        authors=["Alice"],
+                        abstract="A",
+                        venue="ICLR 2025 Oral",
+                        venueid="ICLR/2025",
+                    )
+
+                def fake_download(
+                    paper_id: str,
+                    tags: str | None = None,
+                    progress_callback=None,
+                ) -> dict:
+                    del tags
+                    del progress_callback
+                    if paper_id == "paper-c2":
+                        return {
+                            "operation": "download",
+                            "paper_id": paper_id,
+                            "created": 0,
+                            "updated": 0,
+                            "skipped": 0,
+                            "failed": 1,
+                            "failures": [
+                                {
+                                    "stage": "forum-cache",
+                                    "error": (
+                                        "{'name': 'RateLimitError', 'message': "
+                                        "'Too many requests: discussion fetch failed'}"
+                                    ),
+                                }
+                            ],
+                            "notes": [],
+                            "performance": {
+                                "bytes_downloaded": 0,
+                                "total_bytes": None,
+                                "network_seconds": 0.0,
+                                "io_seconds": 0.0,
+                                "other_seconds": 0.0,
+                                "elapsed_seconds": 0.0,
+                                "source": None,
+                            },
+                        }
+
+                    pdf_path = papers_dir / f"{paper_id}.pdf"
+                    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+                    pdf_path.write_bytes(b"%PDF-1.4 cli")
+                    db.update_pdf_metadata(
+                        paper_id=paper_id,
+                        pdf_path=str(pdf_path),
+                        pdf_sha256=f"sha-{paper_id}",
+                        pdf_size_bytes=len(b"%PDF-1.4 cli"),
+                    )
+                    return {
+                        "operation": "download",
+                        "paper_id": paper_id,
+                        "created": 0,
+                        "updated": 1,
+                        "skipped": 0,
+                        "failed": 0,
+                        "failures": [],
+                        "notes": [f"saved:{pdf_path}"],
+                        "performance": {
+                            "bytes_downloaded": len(b"%PDF-1.4 cli"),
+                            "total_bytes": len(b"%PDF-1.4 cli"),
+                            "network_seconds": 0.0,
+                            "io_seconds": 0.0,
+                            "other_seconds": 0.0,
+                            "elapsed_seconds": 0.0,
+                            "source": "download",
+                        },
+                    }
+
+                with patch("openreview_scraper.worker.service.download_paper", side_effect=fake_download):
+                    run = self.runner.invoke(
+                        cli,
+                        [
+                            "worker",
+                            "run-downloads",
+                            "--enqueue-missing",
+                            "--workers",
+                            "2",
+                            "--status-interval-seconds",
+                            "0.01",
+                        ],
+                    )
+
+            self.assertEqual(run.exit_code, 0, run.output)
+            self.assertIn("Status: ", run.output)
+            self.assertIn("Recent failures:", run.output)
+            self.assertIn("forum-cache: Too many requests: discussion fetch failed", run.output)
+            self.assertNotIn("{'name': 'RateLimitError'", run.output)
+            self.assertIn("Processed 2 download job(s): completed=1 failed=1", run.output)
+
     def test_download_caches_forum_data_and_cli_reads_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "cli-forum-cache.db"

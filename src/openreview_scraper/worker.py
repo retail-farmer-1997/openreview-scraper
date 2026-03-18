@@ -81,12 +81,13 @@ def run_next_sync_job() -> dict:
             "summary": summary,
         }
     except Exception as exc:
-        db.fail_sync_job(job_id, str(exc))
+        error = service.orw.format_error_message(exc)
+        db.fail_sync_job(job_id, error)
         return {
             "status": "failed",
             "processed": True,
             "job_id": job_id,
-            "error": str(exc),
+            "error": error,
         }
 
 
@@ -104,6 +105,58 @@ def _emit_download_progress(
     if progress_callback is None:
         return
     progress_callback(payload)
+
+
+def _download_failure_error(summary: dict[str, object]) -> str:
+    failures = summary.get("failures")
+    if not isinstance(failures, list) or not failures:
+        failed = int(summary.get("failed", 0) or 0)
+        return f"{failed} download item(s) failed" if failed else "download failed"
+
+    formatted: list[str] = []
+    for failure in failures:
+        if not isinstance(failure, dict):
+            continue
+        stage = str(failure.get("stage") or "").strip()
+        error = service.orw.format_error_message(failure.get("error") or "").strip()
+        if stage and error:
+            formatted.append(f"{stage}: {error}")
+        elif error:
+            formatted.append(error)
+        elif stage:
+            formatted.append(stage)
+
+    if not formatted:
+        failed = int(summary.get("failed", 0) or 0)
+        return f"{failed} download item(s) failed" if failed else "download failed"
+    if len(formatted) == 1:
+        return formatted[0]
+    preview = "; ".join(formatted[:2])
+    if len(formatted) > 2:
+        return f"{preview}; +{len(formatted) - 2} more"
+    return preview
+
+
+def _record_recent_failure(
+    recent_failures: dict[str, dict[str, object]],
+    result: dict[str, object],
+) -> None:
+    paper_id = str(result.get("paper_id") or "")
+    if not paper_id:
+        return
+
+    failure = {
+        "paper_id": paper_id,
+        "paper_title": str(result.get("paper_title") or paper_id),
+        "job_id": int(result.get("job_id", 0) or 0),
+        "attempts": int(result.get("attempts", 0) or 0),
+        "error": str(result.get("error") or "download failed"),
+    }
+    recent_failures.pop(paper_id, None)
+    recent_failures[paper_id] = failure
+    while len(recent_failures) > 5:
+        oldest_paper_id = next(iter(recent_failures))
+        recent_failures.pop(oldest_paper_id, None)
 
 
 def run_next_download_job(
@@ -150,7 +203,7 @@ def run_next_download_job(
     try:
         summary = service.download_paper(paper_id=paper_id, progress_callback=forward_progress)
         if summary["failed"] > 0:
-            error = f"{summary['failed']} download item(s) failed"
+            error = _download_failure_error(summary)
             db.fail_download_job(job_id, error)
             _emit_download_progress(
                 progress_callback,
@@ -170,6 +223,8 @@ def run_next_download_job(
                 "processed": True,
                 "job_id": job_id,
                 "paper_id": paper_id,
+                "paper_title": paper_title,
+                "attempts": int(job["attempts"]),
                 "error": error,
                 "summary": summary,
             }
@@ -192,10 +247,13 @@ def run_next_download_job(
             "processed": True,
             "job_id": job_id,
             "paper_id": paper_id,
+            "paper_title": paper_title,
+            "attempts": int(job["attempts"]),
             "summary": summary,
         }
     except Exception as exc:
-        db.fail_download_job(job_id, str(exc))
+        error = service.orw.format_error_message(exc)
+        db.fail_download_job(job_id, error)
         _emit_download_progress(
             progress_callback,
             {
@@ -205,7 +263,7 @@ def run_next_download_job(
                 "paper_title": paper_title,
                 "status": "failed",
                 "phase": "failed",
-                "error": str(exc),
+                "error": error,
             },
         )
         return {
@@ -213,7 +271,9 @@ def run_next_download_job(
             "processed": True,
             "job_id": job_id,
             "paper_id": paper_id,
-            "error": str(exc),
+            "paper_title": paper_title,
+            "attempts": int(job["attempts"]),
+            "error": error,
         }
 
 
@@ -236,6 +296,9 @@ def run_download_worker(
     updated = 0
     skipped = 0
     last_result: dict | None = None
+    failed_attempts = 0
+    failed_papers: set[str] = set()
+    recent_failures: dict[str, dict[str, object]] = {}
 
     while max_jobs is None or processed < max_jobs:
         result = run_next_download_job()
@@ -255,13 +318,19 @@ def run_download_worker(
             updated += int(summary.get("updated", 0))
             skipped += int(summary.get("skipped", 0))
         else:
-            failed += 1
+            failed_attempts += 1
+            paper_id = str(result.get("paper_id") or "")
+            if paper_id and paper_id not in failed_papers:
+                failed_papers.add(paper_id)
+                failed += 1
+            _record_recent_failure(recent_failures, result)
 
     return {
         "operation": "run-downloads",
         "processed": processed,
         "completed": completed,
         "failed": failed,
+        "failed_attempts": failed_attempts,
         "created": created,
         "updated": updated,
         "skipped": skipped,
@@ -269,6 +338,7 @@ def run_download_worker(
         "max_jobs": max_jobs,
         "last_status": last_result["status"] if last_result is not None else "idle",
         "target_jobs": None,
+        "recent_failures": list(recent_failures.values()),
         "bytes_downloaded": 0,
         "network_seconds": 0.0,
         "io_seconds": 0.0,
@@ -276,7 +346,13 @@ def run_download_worker(
     }
 
 
-def _fold_download_result(summary: dict, result: dict) -> None:
+def _fold_download_result(
+    summary: dict,
+    result: dict,
+    *,
+    failed_papers: set[str],
+    recent_failures: dict[str, dict[str, object]],
+) -> None:
     summary["processed"] += 1
     if result["status"] == "completed":
         summary["completed"] += 1
@@ -290,7 +366,13 @@ def _fold_download_result(summary: dict, result: dict) -> None:
         summary["io_seconds"] += float(performance.get("io_seconds", 0.0))
         summary["other_seconds"] += float(performance.get("other_seconds", 0.0))
     else:
-        summary["failed"] += 1
+        summary["failed_attempts"] += 1
+        paper_id = str(result.get("paper_id") or "")
+        if paper_id and paper_id not in failed_papers:
+            failed_papers.add(paper_id)
+            summary["failed"] += 1
+        _record_recent_failure(recent_failures, result)
+        summary["recent_failures"] = list(recent_failures.values())
     summary["last_status"] = result["status"]
 
 
@@ -370,6 +452,7 @@ def run_parallel_download_workers(
         "processed": 0,
         "completed": 0,
         "failed": 0,
+        "failed_attempts": 0,
         "created": 0,
         "updated": 0,
         "skipped": 0,
@@ -378,6 +461,7 @@ def run_parallel_download_workers(
         "workers": worker_count,
         "last_status": "idle",
         "target_jobs": 0,
+        "recent_failures": [],
         "bytes_downloaded": 0,
         "network_seconds": 0.0,
         "io_seconds": 0.0,
@@ -392,6 +476,8 @@ def run_parallel_download_workers(
     futures: dict[Future, int] = {}
     active_jobs: dict[int, dict[str, object]] = {}
     active_jobs_lock = threading.Lock()
+    failed_papers: set[str] = set()
+    recent_failures: dict[str, dict[str, object]] = {}
     started_at = time.perf_counter()
     target_jobs = db.count_claimable_download_jobs()
     if max_jobs is not None:
@@ -436,9 +522,11 @@ def run_parallel_download_workers(
                 "processed": summary["processed"],
                 "completed": summary["completed"],
                 "failed": summary["failed"],
+                "failed_attempts": summary["failed_attempts"],
                 "target_jobs": target_jobs,
                 "counts": queue_status["counts"],
                 "active_jobs": active_snapshot,
+                "recent_failures": list(summary["recent_failures"]),
                 "completed_performance": {
                     "bytes_downloaded": int(summary["bytes_downloaded"]),
                     "network_seconds": float(summary["network_seconds"]),
@@ -477,7 +565,12 @@ def run_parallel_download_workers(
                     submit(executor, slot_id)
                     continue
 
-                _fold_download_result(summary, result)
+                _fold_download_result(
+                    summary,
+                    result,
+                    failed_papers=failed_papers,
+                    recent_failures=recent_failures,
+                )
                 submit(executor, slot_id)
 
             emit_status()

@@ -46,6 +46,12 @@ processed.
 - 2026-03-18: Verified the throttled worker path against the local box state: a real
   `worker run-downloads --workers 1 --max-jobs 2` drained 2/2 jobs successfully instead of
   failing immediately with 429s.
+- 2026-03-18: Refined `worker run-downloads` failure accounting so repeated attempts for the same
+  paper count as one run failure, and added rolling recent-failure reasons to the live status
+  snapshots and rich dashboard output.
+- 2026-03-18: Normalized dict-like OpenReview library errors (for example `{'name': ..., 'message':
+  ...}`) down to the human `message` text before storing worker failures or rendering dashboard
+  status, so rate-limit diagnostics stay readable in the terminal.
 - 2026-03-18: Validation passed for the richer runner with `uv run python
   scripts/check_agent_docs.py`, `uv run python scripts/check_architecture.py`, and `uv run python
   scripts/run_repo_checks.py tests`.

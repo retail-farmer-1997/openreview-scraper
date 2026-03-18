@@ -230,7 +230,7 @@ def fetch_metadata(conference: str, year: int, decision: str) -> dict:
                 skipped_count += 1
         except Exception as exc:
             failed_count += 1
-            failures.append({"stage": f"paper:{paper.id}", "error": str(exc)})
+            failures.append({"stage": f"paper:{paper.id}", "error": orw.format_error_message(exc)})
 
     return {
         "operation": "fetch",
@@ -410,7 +410,7 @@ def download_paper(
                 review_count, post_count = _cache_forum_data(paper_id)
             except Exception as exc:
                 failed_count += 1
-                failures.append({"stage": "forum-cache", "error": str(exc)})
+                failures.append({"stage": "forum-cache", "error": orw.format_error_message(exc)})
             else:
                 updated_count += 1
                 notes.append(f"reviews-cached:{review_count}")
@@ -429,7 +429,7 @@ def download_paper(
     except Exception as exc:
         if not isinstance(exc, ServiceOperationError):
             failed_count += 1
-            failures.append({"stage": "download", "error": str(exc)})
+            failures.append({"stage": "download", "error": orw.format_error_message(exc)})
         raise
 
     elapsed_seconds = time.perf_counter() - started_at
