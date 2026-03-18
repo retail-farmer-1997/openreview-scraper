@@ -82,7 +82,9 @@ class BootstrapLocalCLITests(unittest.TestCase):
             bin_dir = venv_dir / "bin"
             bin_dir.mkdir(parents=True)
             python = bin_dir / "python"
+            uv = root / "uv"
             python.write_text("", encoding="utf-8")
+            uv.write_text("", encoding="utf-8")
 
             with patch.object(bootstrap_local_cli, "ROOT", root):
                 with patch.object(bootstrap_local_cli, "VENV_DIR", venv_dir):
@@ -94,21 +96,26 @@ class BootstrapLocalCLITests(unittest.TestCase):
                         with patch.object(
                             bootstrap_local_cli, "bootstrap_reason", return_value="missing-venv"
                         ):
-                            with patch.object(bootstrap_local_cli, "run_bootstrap") as run_bootstrap:
-                                with patch("scripts.bootstrap_local_cli.subprocess.run") as run:
-                                    run.return_value.returncode = 0
-                                    exit_code = bootstrap_local_cli.dispatch(
-                                        "openreview-scraper",
-                                        ["--help"],
-                                    )
+                            with patch.object(
+                                bootstrap_local_cli,
+                                "_uv_binary",
+                                return_value=str(uv),
+                            ):
+                                with patch.object(bootstrap_local_cli, "run_bootstrap") as run_bootstrap:
+                                    with patch("scripts.bootstrap_local_cli.subprocess.run") as run:
+                                        run.return_value.returncode = 0
+                                        exit_code = bootstrap_local_cli.dispatch(
+                                            "openreview-scraper",
+                                            ["--help"],
+                                        )
 
         run_bootstrap.assert_called_once_with("missing-venv")
         run.assert_called_once_with(
-            [str(python), "-m", "openreview_scraper", "--help"],
+            [str(uv), "run", "python", "-m", "openreview_scraper", "--help"],
             cwd=root,
             env=ANY,
+            check=False,
         )
-        self.assertEqual(run.call_args.kwargs["env"]["PYTHONPATH"], str(root / "src"))
         self.assertEqual(exit_code, 0)
 
     def test_ensure_venv_skips_recreation_for_usable_env(self) -> None:
@@ -123,17 +130,20 @@ class BootstrapLocalCLITests(unittest.TestCase):
             root = Path(tmpdir)
             venv_dir = root / ".venv"
             venv_dir.mkdir()
+            uv = root / "uv"
+            uv.write_text("", encoding="utf-8")
 
             with patch.object(bootstrap_local_cli, "ROOT", root):
                 with patch.object(bootstrap_local_cli, "VENV_DIR", venv_dir):
                     with patch.object(bootstrap_local_cli, "venv_python_usable", return_value=False):
                         with patch("scripts.bootstrap_local_cli.shutil.rmtree") as rmtree:
                             with patch("scripts.bootstrap_local_cli.subprocess.run") as run:
-                                bootstrap_local_cli.ensure_venv()
+                                with patch.object(bootstrap_local_cli, "_uv_binary", return_value=str(uv)):
+                                    bootstrap_local_cli.ensure_venv()
 
         rmtree.assert_called_once_with(venv_dir)
         run.assert_called_once_with(
-            [sys.executable, "-m", "venv", str(venv_dir)],
+            [str(uv), "venv", str(venv_dir)],
             cwd=root,
             check=True,
         )
@@ -145,12 +155,14 @@ class BootstrapLocalCLITests(unittest.TestCase):
             stamp_path.parent.mkdir(parents=True)
 
             with patch.object(bootstrap_local_cli, "STAMP_PATH", stamp_path):
-                with patch.object(bootstrap_local_cli, "ensure_venv") as ensure_venv:
-                    bootstrap_local_cli.run_bootstrap("missing-stamp")
+                with patch.object(bootstrap_local_cli, "install_dependencies") as install_dependencies:
+                    with patch.object(bootstrap_local_cli, "ensure_venv") as ensure_venv:
+                        bootstrap_local_cli.run_bootstrap("missing-stamp")
 
             self.assertEqual(stamp_path.read_text(encoding="utf-8"), "bootstrapped\n")
 
         ensure_venv.assert_called_once_with()
+        install_dependencies.assert_called_once_with()
 
     def test_bootstrap_reason_rejects_unknown_entrypoint(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported entrypoint"):

@@ -16,6 +16,17 @@ STAMP_PATH = VENV_DIR / ".bootstrap-stamp"
 ENTRYPOINT_TO_MODULE = {
     "openreview-scraper": "openreview_scraper",
 }
+UV_ENV = "OPENREVIEW_SCRAPER_UV"
+
+
+def _uv_binary() -> str:
+    explicit = os.environ.get(UV_ENV, "").strip()
+    if explicit:
+        return explicit
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeError("uv is required for local launcher mode. Install uv (https://docs.astral.sh/uv/) and retry.")
+    return uv
 
 
 def _bin_dir() -> Path:
@@ -65,11 +76,16 @@ def ensure_venv() -> None:
     if VENV_DIR.exists():
         shutil.rmtree(VENV_DIR)
 
-    subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], cwd=ROOT, check=True)
+    subprocess.run([_uv_binary(), "venv", str(VENV_DIR)], cwd=ROOT, check=True)
+
+
+def install_dependencies() -> None:
+    subprocess.run([_uv_binary(), "sync"], cwd=ROOT, check=True)
 
 
 def run_bootstrap(reason: str) -> None:
     ensure_venv()
+    install_dependencies()
     STAMP_PATH.write_text("bootstrapped\n", encoding="utf-8")
 
 
@@ -80,12 +96,17 @@ def dispatch(entrypoint: str, argv: list[str]) -> int:
         run_bootstrap(reason)
 
     env = dict(os.environ)
-    src_path = str(ROOT / "src")
-    existing = env.get("PYTHONPATH", "").strip()
-    env["PYTHONPATH"] = src_path if not existing else f"{src_path}{os.pathsep}{existing}"
+    uv_binary = _uv_binary()
 
-    command = [str(venv_python()), "-m", ENTRYPOINT_TO_MODULE[entrypoint], *argv]
-    completed = subprocess.run(command, cwd=ROOT, env=env)
+    command = [
+        uv_binary,
+        "run",
+        "python",
+        "-m",
+        ENTRYPOINT_TO_MODULE[entrypoint],
+        *argv,
+    ]
+    completed = subprocess.run(command, cwd=ROOT, env=env, check=False)
     return completed.returncode
 
 
@@ -96,7 +117,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     entrypoint = args[0]
-    return dispatch(entrypoint, args[1:])
+    try:
+        return dispatch(entrypoint, args[1:])
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

@@ -83,3 +83,4 @@ surface.
 - 2026-03-18: Added and adapted unit and integration coverage for settings, models, migrations, DB integration, service/worker flows, and the CLI contract.
 - 2026-03-18: Validation passed with `python3 scripts/check_agent_docs.py`, `python3 scripts/check_architecture.py`, and `python3 scripts/run_repo_checks.py tests`.
 - 2026-03-18: Live smoke-tested the authenticated CLI path against OpenReview with repo-local credentials and confirmed `fetch ICLR 2025 oral --json-output` created 213 papers in a fresh temp database, followed by successful `db stats --json-output`.
+- 2026-03-18: Updated local launcher to use `uv` for bootstrap (`uv venv` + `uv sync`) and documented `uv sync` / `uv run` as the primary local install/run path.

@@ -68,19 +68,34 @@ Compatibility fallbacks remain enabled during the port:
 
 ## Local Bootstrap
 
-The repo-root launcher creates `.venv` and dispatches to `python -m openreview_scraper` from the
-local `src/` tree:
+The repo-root launcher uses `uv` to keep installs reproducible and runnable on any box with
+`pyproject.toml`:
 
 ```bash
+uv sync
 ./openreview-scraper --help
 ./openreview-scraper --version
 ```
 
-You can also run the package directly during development:
+If you want a fully direct path, invoke via `uv run`:
+
+```bash
+uv run openreview-scraper --help
+uv run openreview-scraper --version
+```
+
+You can also run the package directly for source-only development:
 
 ```bash
 PYTHONPATH=src python3 -m openreview_scraper --help
 PYTHONPATH=src python3 -m openreview_scraper fetch ICLR 2025 oral --json-output
+```
+
+You can install globally with Python package tools too:
+
+```bash
+python3 -m pip install -e .
+openreview-scraper --help
 ```
 
 ## Validation
