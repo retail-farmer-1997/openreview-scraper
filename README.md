@@ -12,6 +12,8 @@ agent harness that keeps implementation work inspectable.
 - The CLI/backend port is implemented for the OpenReview, database, service, and worker flows.
 - The active implementation record lives in
   [`docs/exec-plans/active/20260318-cli-only-port.md`](docs/exec-plans/active/20260318-cli-only-port.md).
+- Packaging and release automation lives in
+  [`docs/exec-plans/active/20260318-cli-packaging-distribution.md`](docs/exec-plans/active/20260318-cli-packaging-distribution.md).
 - The repo intentionally excludes the dashboard/UI surface.
 
 ## Command Surface
@@ -94,6 +96,10 @@ Compatibility fallbacks remain enabled during the port:
 - OpenReview library variables: `OPENREVIEW_USERNAME`, `OPENREVIEW_PASSWORD`,
   `OPENREVIEW_TOKEN`
 
+When you explicitly set a relative path such as `OPENREVIEW_SCRAPER_DB_PATH=tmp/scraper.db`,
+`openreview-scraper` resolves it from your current working directory. Unset paths still default to
+the platform-specific application data directory.
+
 ## Local Bootstrap
 
 The repo-root launcher uses `uv` to keep installs reproducible and runnable on any box with
@@ -126,12 +132,44 @@ python3 -m pip install -e .
 openreview-scraper --help
 ```
 
+## Installed Usage
+
+For end-user installs, prefer `pipx` so the console script stays isolated from your main Python
+environment:
+
+```bash
+pipx install openreview-scraper
+openreview-scraper --help
+```
+
+Upgrade or remove a `pipx` install with:
+
+```bash
+pipx upgrade openreview-scraper
+pipx uninstall openreview-scraper
+```
+
+If you need a plain `pip` install instead:
+
+```bash
+python3 -m pip install openreview-scraper
+openreview-scraper --help
+```
+
+Upgrade or remove a `pip` install with:
+
+```bash
+python3 -m pip install --upgrade openreview-scraper
+python3 -m pip uninstall openreview-scraper
+```
+
 ## Validation
 
 ```bash
 uv run python scripts/check_agent_docs.py
 uv run python scripts/check_architecture.py
 uv run python scripts/run_repo_checks.py tests
+uv run python scripts/run_repo_checks.py packaging
 ```
 
 ## Repo Guide

@@ -50,7 +50,7 @@ def expand_checks(requested: list[str]) -> list[str]:
     expanded: list[str] = []
     for check in requested:
         if check == "all":
-            expanded.extend(["guardrails", "tests"])
+            expanded.extend(["guardrails", "tests", "packaging"])
         else:
             expanded.append(check)
 

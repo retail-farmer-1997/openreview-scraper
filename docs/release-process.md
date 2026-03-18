@@ -10,14 +10,15 @@ This repository ships `openreview-scraper` as a Python CLI package while keeping
 
 ## Workflow Files
 - `.github/workflows/package-verification.yml` checks pull requests and manual runs by building
-  `sdist` and `wheel` artifacts, checking their metadata, and smoke-testing fresh installs.
+  `sdist` and `wheel` artifacts, checking their metadata, and smoke-testing fresh installs through
+  `scripts/run_packaging_smoke.py`.
 - `.github/workflows/release-publish.yml` handles tag-driven publication with trusted publishing.
 
 ## Tagging Rules
 - Cut releases from a merged commit on `main`.
 - Use `vX.Y.Z` tags.
-- Keep the tag aligned with the package version in `pyproject.toml` and the package version
-  constant used by the CLI.
+- Keep the tag aligned with `src/openreview_scraper/__init__.py`; `pyproject.toml` imports the
+  package version dynamically from that constant.
 - Do not publish from an unmerged branch or from a tag that does not match the package version.
 
 ## Release Flow
@@ -28,10 +29,14 @@ This repository ships `openreview-scraper` as a Python CLI package while keeping
    fresh installs, and publishes to PyPI through trusted publishing.
 5. Record the release notes in GitHub after publish.
 
+Manual publication is also available through the workflow dispatch path, but it must point at an
+existing `vX.Y.Z` tag rather than a branch ref.
+
 ## Trusted Publishing Assumptions
 - PyPI is configured with a trusted publisher entry for this GitHub repository.
 - The publish job uses GitHub OIDC and does not rely on a long-lived PyPI API token.
-- The release workflow only publishes when the ref is a `v*` tag push.
+- The release workflow only publishes for a `v*` tag push or an explicit manual dispatch that names
+  an existing `v*` tag and opts into publication.
 
 ## Post-Publish Smoke Checks
 - Install the released version into a fresh environment with `pipx install openreview-scraper==X.Y.Z`

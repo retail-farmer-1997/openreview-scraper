@@ -67,14 +67,8 @@ class PackagingSmokeTests(unittest.TestCase):
             [
                 "/tmp/uv",
                 "run",
-                "--with",
-                "build",
-                "--with",
-                "setuptools",
-                "--with",
-                "wheel",
-                "--with",
-                "twine",
+                "--group",
+                run_packaging_smoke.PACKAGING_GROUP,
                 "python",
                 "-m",
                 "build",
@@ -89,6 +83,31 @@ class PackagingSmokeTests(unittest.TestCase):
             "openreview_scraper-0.1.0.tar.gz",
             "openreview_scraper-0.1.0-py3-none-any.whl",
         })
+
+    def test_build_artifacts_clears_previous_dist_and_build_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            dist_dir = tmp / "dist"
+            build_dir = tmp / run_packaging_smoke.BUILD_DIR_NAME
+            dist_dir.mkdir(parents=True)
+            build_dir.mkdir(parents=True, exist_ok=True)
+            (dist_dir / "stale.whl").write_text("stale", encoding="utf-8")
+            (build_dir / "artifact").write_text("stale", encoding="utf-8")
+
+            def fake_run(command: list[str], *, cwd: Path = tmp, env: dict[str, str] | None = None) -> None:
+                self.assertFalse((dist_dir / "stale.whl").exists())
+                self.assertFalse((build_dir / "artifact").exists())
+                (dist_dir / "openreview_scraper-0.1.0-py3-none-any.whl").write_text(
+                    "wheel",
+                    encoding="utf-8",
+                )
+
+            with patch.object(run_packaging_smoke, "ROOT", tmp):
+                with patch.object(run_packaging_smoke, "_uv_binary", return_value="/tmp/uv"):
+                    with patch.object(run_packaging_smoke, "_run", side_effect=fake_run):
+                        artifacts = run_packaging_smoke._build_artifacts(dist_dir)
+
+        self.assertEqual([path.name for path in artifacts], ["openreview_scraper-0.1.0-py3-none-any.whl"])
 
     def test_assert_artifact_contains_migrations_accepts_wheel_and_sdist_layouts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

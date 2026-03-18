@@ -43,9 +43,8 @@ architecture boundaries.
 - `uv run python scripts/check_agent_docs.py`
 - `uv run python scripts/check_architecture.py`
 - `uv run python scripts/run_repo_checks.py tests`
-- `uv run python -m build --sdist --wheel` after build tooling lands
-- `uv run python -m twine check dist/*` or equivalent artifact metadata verification after publish
-  tooling lands
+- `uv run python scripts/run_repo_checks.py packaging`
+- `uv run python scripts/run_packaging_smoke.py --dist-dir dist`
 - New installed-artifact smoke validation that creates a clean environment, installs the built
   package, and verifies `openreview-scraper --help`, `--version`, and `db status` work without
   repo-relative dependencies
@@ -107,3 +106,13 @@ architecture boundaries.
   implementation slice.
 - 2026-03-18: Added workflow checks that compare `pyproject.toml` against the CLI version constant
   and reject release tags that do not match the packaged version.
+- 2026-03-18: Switched the package version contract to a single source of truth in
+  `src/openreview_scraper/__init__.py`, with `pyproject.toml` reading that value dynamically for
+  builds and release checks.
+- 2026-03-18: Hardened installed-package runtime behavior by resolving explicit relative data paths
+  from the caller's current working directory instead of the source checkout.
+- 2026-03-18: Reworked migration discovery to use package-resource loading, added explicit package
+  data for SQL migrations, and added build-tool dependency locking plus deterministic artifact smoke
+  checks.
+- 2026-03-18: Documented end-user `pipx`/`pip` install flows and updated release automation to run
+  the repo-local packaging smoke script with the locked packaging toolchain.

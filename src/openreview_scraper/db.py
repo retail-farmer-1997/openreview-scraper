@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from importlib.abc import Traversable
+from importlib import resources
 import json
 import os
 import sqlite3
@@ -64,7 +66,6 @@ except ModuleNotFoundError:
         return _Settings(db_path=Path(db_path).resolve(), db_busy_timeout_ms=db_busy_timeout_ms)
 
 
-MIGRATIONS_DIR = Path(__file__).with_name("migrations")
 SCHEMA_MIGRATIONS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version TEXT PRIMARY KEY,
@@ -111,10 +112,18 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def _list_migration_files() -> list[Path]:
-    files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+def _list_migration_files() -> list[Traversable]:
+    migrations_dir = resources.files("openreview_scraper").joinpath("migrations")
+    files = sorted(
+        (
+            resource
+            for resource in migrations_dir.iterdir()
+            if resource.is_file() and resource.name.endswith(".sql")
+        ),
+        key=lambda resource: resource.name,
+    )
     if not files:
-        raise RuntimeError(f"no migration files found in {MIGRATIONS_DIR}")
+        raise RuntimeError(f"no migration files found in {migrations_dir}")
     return files
 
 

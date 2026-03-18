@@ -19,6 +19,7 @@ UV_ENV = "OPENREVIEW_SCRAPER_UV"
 MIGRATIONS_DIR = ROOT / "src" / "openreview_scraper" / "migrations"
 DIST_DIR_NAME = "dist"
 BUILD_DIR_NAME = "build"
+PACKAGING_GROUP = "packaging"
 
 
 class PackagingSmokeError(RuntimeError):
@@ -43,19 +44,22 @@ def _run(command: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = N
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
+def _remove_existing_build_outputs(dist_dir: Path) -> None:
+    if dist_dir.exists():
+        shutil.rmtree(dist_dir)
+    build_dir = ROOT / BUILD_DIR_NAME
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+
+
 def _build_artifacts(dist_dir: Path) -> list[Path]:
+    _remove_existing_build_outputs(dist_dir)
     dist_dir.mkdir(parents=True, exist_ok=True)
     command = [
         _uv_binary(),
         "run",
-        "--with",
-        "build",
-        "--with",
-        "setuptools",
-        "--with",
-        "wheel",
-        "--with",
-        "twine",
+        "--group",
+        PACKAGING_GROUP,
         "python",
         "-m",
         "build",
@@ -77,7 +81,16 @@ def _build_artifacts(dist_dir: Path) -> list[Path]:
 
 
 def _check_artifact_metadata(artifacts: list[Path]) -> None:
-    command = [_uv_binary(), "run", "--with", "twine", "python", "-m", "twine", "check"]
+    command = [
+        _uv_binary(),
+        "run",
+        "--group",
+        PACKAGING_GROUP,
+        "python",
+        "-m",
+        "twine",
+        "check",
+    ]
     command.extend(str(path) for path in artifacts)
     _run(command)
 

@@ -6,6 +6,7 @@ Status: Active
 
 ## Test Command
 - Local and CI baseline: `python3 scripts/run_repo_checks.py tests`
+- Packaging release check: `python3 scripts/run_repo_checks.py packaging`
 
 ## Scope Baseline
 - Bootstrap tests cover repo-local CLI launcher behavior in `tests/test_bootstrap_local_cli.py`.

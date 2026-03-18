@@ -11,7 +11,6 @@ from typing import Mapping
 from urllib.parse import urlparse
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR_NAME = "openreview_scraper"
 DEFAULT_GCS_CACHE_DIR_NAME = "gcs-cache"
 DEFAULT_OPENREVIEW_API_URL = "https://api2.openreview.net"
@@ -77,9 +76,7 @@ def _default_data_dir(env: Mapping[str, str]) -> Path:
 
 
 def _relative_path_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path.cwd()
-    return PROJECT_ROOT
+    return Path.cwd()
 
 
 def _read_env(env: Mapping[str, str], key: str) -> str | None:
