@@ -24,6 +24,7 @@ priorities; agents execute implementation.
 - Update docs and execution plans in the same PR as behavior changes.
 - Do not add hidden context; decisions must be recorded in-repo.
 - Enforce invariants mechanically where possible.
+- Use `uv run` / `uv run python` for repo-local Python commands so tooling resolves against the pinned env.
 - Start non-trivial implementation from a Linear issue or an explicitly referenced execution plan.
 - Keep the Linear issue, branch/PR linkage, and active execution plan aligned when scope or decisions change.
 
@@ -43,9 +44,9 @@ priorities; agents execute implementation.
 Run:
 
 ```bash
-python3 scripts/check_agent_docs.py
-python3 scripts/check_architecture.py
-python3 scripts/run_repo_checks.py tests
+uv run python scripts/check_agent_docs.py
+uv run python scripts/check_architecture.py
+uv run python scripts/run_repo_checks.py tests
 ```
 
 If the repo layout changes, update `agent-harness.json` so the docs contract stays accurate.

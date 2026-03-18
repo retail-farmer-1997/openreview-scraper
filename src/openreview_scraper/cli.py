@@ -6,6 +6,12 @@ import json
 import sys
 
 import click
+from rich import box
+from rich.console import Console, Group
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from . import __version__, db, openreview as orw, service, settings, worker
 
@@ -31,6 +37,235 @@ WORKER_COMMANDS = (
     "run-downloads",
     "download-status",
 )
+
+
+def _stream_is_tty(stream) -> bool:
+    isatty = getattr(stream, "isatty", None)
+    if isatty is None:
+        return False
+    try:
+        return bool(isatty())
+    except OSError:
+        return False
+
+
+def _truncate_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    if limit <= 1:
+        return value[:limit]
+    return f"{value[:limit - 1]}…"
+
+
+def _format_bytes(value: int | float) -> str:
+    amount = float(value)
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    unit_index = 0
+    while amount >= 1024 and unit_index < len(units) - 1:
+        amount /= 1024
+        unit_index += 1
+    if unit_index == 0:
+        return f"{int(amount)} {units[unit_index]}"
+    return f"{amount:.1f} {units[unit_index]}"
+
+
+def _format_rate(value: float) -> str:
+    if value <= 0:
+        return "0 B/s"
+    return f"{_format_bytes(value)}/s"
+
+
+def _format_papers_rate(value: float) -> str:
+    if value <= 0:
+        return "0.0 papers/min"
+    return f"{value:.1f} papers/min"
+
+
+def _format_ratio_label(numerator: float, denominator: float) -> str:
+    if denominator <= 0:
+        return "0%"
+    return f"{round((numerator / denominator) * 100):.0f}%"
+
+
+def _format_phase_label(phase: str) -> str:
+    return phase.replace("-", " ")
+
+
+def _job_progress_ratio(job: dict) -> float | None:
+    phase = str(job.get("phase") or "")
+    total_bytes = job.get("total_bytes")
+    bytes_downloaded = int(job.get("bytes_downloaded", 0))
+    if isinstance(total_bytes, int) and total_bytes > 0:
+        ratio = min(bytes_downloaded / total_bytes, 1.0)
+        if phase == "caching-forum":
+            return 0.98
+        return ratio
+    if phase == "claimed":
+        return 0.02
+    if phase == "loading-metadata":
+        return 0.05
+    if phase == "fetching-paper-metadata":
+        return 0.1
+    if phase == "caching-forum":
+        return 0.98
+    return None
+
+
+def _bar_text(progress: float | None, width: int, frame: int) -> Text:
+    if progress is None:
+        pulse = frame % max(width, 1)
+        chars = [" "] * width
+        for offset in range(4):
+            index = min(width - 1, pulse + offset)
+            chars[index] = "━"
+        return Text("".join(chars), style="cyan")
+
+    clamped = max(0.0, min(progress, 1.0))
+    filled = int(clamped * width)
+    if filled >= width:
+        return Text("█" * width, style="green")
+    return Text(("█" * filled) + ("░" * (width - filled)), style="cyan")
+
+
+class _DownloadDashboard:
+    def __init__(self, stream, *, worker_count: int) -> None:
+        self._worker_count = worker_count
+        self._console = Console(file=stream, force_terminal=True, color_system="truecolor")
+        self._live = Live(console=self._console, refresh_per_second=8, auto_refresh=False)
+        self._snapshot: dict[str, object] = {
+            "workers": worker_count,
+            "processed": 0,
+            "completed": 0,
+            "failed": 0,
+            "target_jobs": 0,
+            "counts": {"pending": 0, "running": 0, "completed": 0, "failed": 0},
+            "metrics": {
+                "bytes_downloaded": 0,
+                "network_seconds": 0.0,
+                "io_seconds": 0.0,
+                "other_seconds": 0.0,
+                "elapsed_seconds": 0.0,
+                "papers_per_minute": 0.0,
+                "bytes_per_second": 0.0,
+                "constraint": "idle",
+            },
+        }
+        self._active_slots: dict[int, dict] = {}
+        self._frame = 0
+
+    def __enter__(self) -> "_DownloadDashboard":
+        self._live.__enter__()
+        self._refresh()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._live.__exit__(exc_type, exc_value, traceback)
+
+    def accept_snapshot(self, snapshot: dict) -> None:
+        self._snapshot.update(snapshot)
+        if "active_jobs" in snapshot:
+            self._active_slots = {
+                int(job["slot"]): dict(job) for job in snapshot.get("active_jobs", [])
+            }
+        self._refresh()
+
+    def accept_event(self, event: dict) -> None:
+        slot = int(event["slot"])
+        if event.get("kind") == "finished":
+            self._active_slots.pop(slot, None)
+        else:
+            self._active_slots[slot] = dict(event)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        self._frame += 1
+        self._live.update(self._render(), refresh=True)
+
+    def _render(self):
+        metrics = dict(self._snapshot.get("metrics", {}))
+        counts = dict(self._snapshot.get("counts", {}))
+        processed = int(self._snapshot.get("processed", 0))
+        target_jobs = int(self._snapshot.get("target_jobs", 0) or 0)
+
+        overall_lines = Group(
+            Text(
+                f"{processed}/{target_jobs if target_jobs else processed} papers complete"
+                if target_jobs
+                else f"{processed} papers complete",
+                style="bold white",
+            ),
+            _bar_text(
+                (processed / target_jobs) if target_jobs else (1.0 if processed else 0.0),
+                72,
+                self._frame,
+            ),
+            Text(
+                " | ".join(
+                    [
+                        _format_papers_rate(float(metrics.get("papers_per_minute", 0.0))),
+                        _format_rate(float(metrics.get("bytes_per_second", 0.0))),
+                        (
+                            "bound "
+                            f"{metrics.get('constraint', 'idle')} "
+                            f"(net {_format_ratio_label(float(metrics.get('network_seconds', 0.0)), max(float(metrics.get('network_seconds', 0.0)) + float(metrics.get('io_seconds', 0.0)) + float(metrics.get('other_seconds', 0.0)), 0.0))}, "
+                            f"io {_format_ratio_label(float(metrics.get('io_seconds', 0.0)), max(float(metrics.get('network_seconds', 0.0)) + float(metrics.get('io_seconds', 0.0)) + float(metrics.get('other_seconds', 0.0)), 0.0))}, "
+                            f"other {_format_ratio_label(float(metrics.get('other_seconds', 0.0)), max(float(metrics.get('network_seconds', 0.0)) + float(metrics.get('io_seconds', 0.0)) + float(metrics.get('other_seconds', 0.0)), 0.0))})"
+                        ),
+                    ]
+                ),
+                style="dim",
+            ),
+            Text(
+                "queue "
+                f"pending={counts.get('pending', 0)} "
+                f"running={counts.get('running', 0)} "
+                f"completed={counts.get('completed', 0)} "
+                f"failed={counts.get('failed', 0)}",
+                style="dim",
+            ),
+        )
+
+        workers_table = Table(box=box.SIMPLE_HEAVY, expand=True)
+        workers_table.add_column("Worker", style="bold cyan", no_wrap=True)
+        workers_table.add_column("Paper", ratio=3)
+        workers_table.add_column("Progress", ratio=2)
+        workers_table.add_column("Phase", ratio=1)
+        workers_table.add_column("Transfer", justify="right", ratio=1)
+
+        for slot_id in range(self._worker_count):
+            event = self._active_slots.get(slot_id)
+            if event is None:
+                workers_table.add_row(
+                    f"#{slot_id + 1}",
+                    Text("Idle", style="dim"),
+                    _bar_text(0.0, 24, self._frame),
+                    Text("waiting", style="dim"),
+                    Text("0 B", style="dim"),
+                )
+                continue
+
+            paper_title = _truncate_text(str(event.get("paper_title") or event.get("paper_id") or ""), 58)
+            ratio = _job_progress_ratio(event)
+            total_bytes = event.get("total_bytes")
+            bytes_downloaded = int(event.get("bytes_downloaded", 0))
+            if isinstance(total_bytes, int) and total_bytes > 0:
+                transfer_text = (
+                    f"{_format_bytes(bytes_downloaded)} / {_format_bytes(total_bytes)}"
+                )
+            else:
+                transfer_text = _format_bytes(bytes_downloaded)
+            workers_table.add_row(
+                f"#{slot_id + 1}",
+                Text(paper_title),
+                _bar_text(ratio, 24, self._frame),
+                Text(_format_phase_label(str(event.get("phase") or "running")), style="magenta"),
+                Text(transfer_text, style="green"),
+            )
+
+        return Group(
+            Panel(overall_lines, title="Download Queue", border_style="cyan"),
+            workers_table,
+        )
 
 
 def _ensure_db_migrated() -> None:
@@ -299,6 +534,9 @@ def worker_run_downloads(
     if continuous and workers > 1:
         raise click.ClickException("--continuous only supports --workers 1")
 
+    stdout_stream = click.get_text_stream("stdout")
+    rich_live_enabled = not json_output and not continuous and _stream_is_tty(stdout_stream)
+
     enqueue_summary: dict | None = None
     if enqueue_missing:
         enqueue_summary = worker.enqueue_reconcile_download_requests()
@@ -309,23 +547,23 @@ def worker_run_downloads(
                 f"{enqueue_summary['skipped']} already active."
             )
 
-    if not json_output and not continuous and workers > 1:
+    if not json_output and not continuous and workers > 1 and not rich_live_enabled:
         click.echo(f"Starting {workers} local download workers.")
 
     def emit_status(snapshot: dict) -> None:
         counts = snapshot["counts"]
+        metrics = snapshot.get("metrics", {})
+        target_jobs = snapshot.get("target_jobs") or snapshot["processed"]
         click.echo(
             "Status: "
+            f"{snapshot['processed']}/{target_jobs} "
             f"pending={counts['pending']} "
             f"running={counts['running']} "
             f"completed={counts['completed']} "
             f"failed={counts['failed']} "
-            f"processed={snapshot['processed']}"
+            f"rate={_format_papers_rate(float(metrics.get('papers_per_minute', 0.0)))} "
+            f"bound={metrics.get('constraint', 'idle')}"
         )
-
-    status_callback = None
-    if not json_output and not continuous and workers > 1 and status_interval_seconds > 0:
-        status_callback = emit_status
 
     if continuous:
         summary = worker.run_download_worker(
@@ -335,12 +573,25 @@ def worker_run_downloads(
         )
         summary["workers"] = 1
     else:
-        summary = worker.run_parallel_download_workers(
-            worker_count=workers,
-            max_jobs=max_jobs,
-            status_interval_seconds=status_interval_seconds,
-            status_callback=status_callback,
-        )
+        if rich_live_enabled:
+            with _DownloadDashboard(stdout_stream, worker_count=workers) as dashboard:
+                summary = worker.run_parallel_download_workers(
+                    worker_count=workers,
+                    max_jobs=max_jobs,
+                    status_interval_seconds=status_interval_seconds,
+                    status_callback=dashboard.accept_snapshot,
+                    progress_callback=dashboard.accept_event,
+                )
+        else:
+            status_callback = None
+            if not json_output and status_interval_seconds > 0:
+                status_callback = emit_status
+            summary = worker.run_parallel_download_workers(
+                worker_count=workers,
+                max_jobs=max_jobs,
+                status_interval_seconds=status_interval_seconds,
+                status_callback=status_callback,
+            )
 
     if enqueue_summary is not None:
         summary = {**summary, "enqueue": enqueue_summary}
@@ -359,7 +610,10 @@ def worker_run_downloads(
         f"failed={summary['failed']} "
         f"created={summary['created']} "
         f"updated={summary['updated']} "
-        f"skipped={summary['skipped']}"
+        f"skipped={summary['skipped']} "
+        f"rate={_format_papers_rate(float(summary.get('papers_per_minute', 0.0)))} "
+        f"throughput={_format_rate(float(summary.get('bytes_per_second', 0.0)))} "
+        f"bound={summary.get('constraint', 'idle')}"
     )
 
 

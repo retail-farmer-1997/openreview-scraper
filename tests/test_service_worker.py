@@ -127,8 +127,13 @@ class ServiceWorkerTests(unittest.TestCase):
 
                 enqueue = worker.enqueue_reconcile_download_requests()
 
-                def fake_download(paper_id: str, tags: str | None = None) -> dict:
+                def fake_download(
+                    paper_id: str,
+                    tags: str | None = None,
+                    progress_callback=None,
+                ) -> dict:
                     del tags
+                    del progress_callback
                     pdf_path = papers_dir / f"{paper_id}.pdf"
                     pdf_path.parent.mkdir(parents=True, exist_ok=True)
                     pdf_path.write_bytes(b"%PDF-1.4 worker")
@@ -188,9 +193,15 @@ class ServiceWorkerTests(unittest.TestCase):
 
                 enqueue = worker.enqueue_reconcile_download_requests()
                 status_snapshots: list[dict] = []
+                progress_events: list[dict] = []
 
-                def fake_download(paper_id: str, tags: str | None = None) -> dict:
+                def fake_download(
+                    paper_id: str,
+                    tags: str | None = None,
+                    progress_callback=None,
+                ) -> dict:
                     del tags
+                    del progress_callback
                     pdf_path = papers_dir / f"{paper_id}.pdf"
                     pdf_path.parent.mkdir(parents=True, exist_ok=True)
                     pdf_path.write_bytes(b"%PDF-1.4 parallel")
@@ -216,6 +227,7 @@ class ServiceWorkerTests(unittest.TestCase):
                         worker_count=2,
                         status_interval_seconds=0.01,
                         status_callback=status_snapshots.append,
+                        progress_callback=progress_events.append,
                     )
 
                 queue_status = worker.get_download_queue_status(limit=5)
@@ -225,7 +237,13 @@ class ServiceWorkerTests(unittest.TestCase):
             self.assertEqual(result["completed"], 3)
             self.assertEqual(result["failed"], 0)
             self.assertEqual(result["workers"], 2)
+            self.assertEqual(result["target_jobs"], 3)
+            self.assertIn(result["constraint"], {"io", "mixed", "network", "other", "idle"})
             self.assertTrue(status_snapshots)
+            self.assertGreaterEqual(status_snapshots[-1]["target_jobs"], 3)
+            self.assertIn("constraint", status_snapshots[-1]["metrics"])
+            self.assertTrue(progress_events)
+            self.assertTrue(any(event["paper_title"].startswith("Queued") for event in progress_events))
             self.assertEqual(queue_status["counts"]["completed"], 3)
             self.assertEqual(queue_status["counts"]["pending"], 0)
 

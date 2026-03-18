@@ -1350,3 +1350,24 @@ def get_download_queue_status(limit: int = 20) -> dict:
     with get_connection() as conn:
         counts = _status_counts(conn, "download_jobs")
     return {"counts": counts, "jobs": list_download_jobs(limit=limit)}
+
+
+def count_claimable_download_jobs() -> int:
+    """Count download jobs that a local worker could claim right now."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                SUM(
+                    CASE
+                        WHEN status = 'pending' THEN 1
+                        WHEN status = 'running'
+                         AND lease_expires_at IS NOT NULL
+                         AND lease_expires_at <= CURRENT_TIMESTAMP THEN 1
+                        ELSE 0
+                    END
+                ) AS claimable
+            FROM download_jobs
+            """
+        ).fetchone()
+    return int(row["claimable"] or 0)

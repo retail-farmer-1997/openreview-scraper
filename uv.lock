@@ -1085,6 +1085,7 @@ dependencies = [
     { name = "click" },
     { name = "openreview-py" },
     { name = "requests" },
+    { name = "rich" },
 ]
 
 [package.metadata]
@@ -1092,6 +1093,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.3.1" },
     { name = "openreview-py", specifier = ">=1.59.0" },
     { name = "requests", specifier = ">=2.32.5" },
+    { name = "rich", specifier = ">=14.1.0" },
 ]
 
 [[package]]

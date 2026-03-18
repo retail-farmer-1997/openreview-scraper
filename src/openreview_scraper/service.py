@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import time
+from typing import Callable
 
 from . import db, openreview as orw, settings
 from .models import DiscussionPost, PaperDiscussion, Review
@@ -11,6 +13,9 @@ from .models import DiscussionPost, PaperDiscussion, Review
 
 class ServiceOperationError(RuntimeError):
     """Raised for service-layer operation errors suitable for CLI/worker surfacing."""
+
+
+DownloadProgressCallback = Callable[[dict[str, object]], None]
 
 
 def _datetime_to_epoch_ms(value: datetime | None) -> int | None:
@@ -249,7 +254,29 @@ def _refresh_pdf_metadata(paper_id: str, pdf_path: Path) -> None:
     )
 
 
-def download_paper(paper_id: str, tags: str | None = None) -> dict:
+def _refresh_pdf_metadata_from_artifact(paper_id: str, artifact: dict[str, object]) -> None:
+    db.update_pdf_metadata(
+        paper_id=paper_id,
+        pdf_path=str(artifact["path"]),
+        pdf_sha256=str(artifact["sha256"]),
+        pdf_size_bytes=int(artifact["size_bytes"]),
+    )
+
+
+def _emit_download_progress(
+    progress_callback: DownloadProgressCallback | None,
+    payload: dict[str, object],
+) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(payload)
+
+
+def download_paper(
+    paper_id: str,
+    tags: str | None = None,
+    progress_callback: DownloadProgressCallback | None = None,
+) -> dict:
     """Download/reconcile PDF for a paper with idempotent metadata updates."""
     db.migrate()
 
@@ -259,10 +286,34 @@ def download_paper(paper_id: str, tags: str | None = None) -> dict:
     failed_count = 0
     failures: list[dict[str, str]] = []
     notes: list[str] = []
+    artifact: dict[str, object] | None = None
+    started_at = time.perf_counter()
 
     try:
+        _emit_download_progress(
+            progress_callback,
+            {
+                "phase": "loading-metadata",
+                "bytes_downloaded": 0,
+                "total_bytes": None,
+                "network_seconds": 0.0,
+                "io_seconds": 0.0,
+                "elapsed_seconds": 0.0,
+            },
+        )
         paper = db.get_paper(paper_id)
         if paper is None:
+            _emit_download_progress(
+                progress_callback,
+                {
+                    "phase": "fetching-paper-metadata",
+                    "bytes_downloaded": 0,
+                    "total_bytes": None,
+                    "network_seconds": 0.0,
+                    "io_seconds": 0.0,
+                    "elapsed_seconds": time.perf_counter() - started_at,
+                },
+            )
             fetched = orw.fetch_paper(paper_id)
             if fetched is None:
                 failed_count += 1
@@ -287,12 +338,26 @@ def download_paper(paper_id: str, tags: str | None = None) -> dict:
                 skipped_count += 1
             paper = db.get_paper(paper_id)
 
+        paper_title = paper["title"] if paper is not None else paper_id
+
+        def forward_progress(update: dict[str, object]) -> None:
+            _emit_download_progress(
+                progress_callback,
+                {
+                    "paper_id": paper_id,
+                    "paper_title": paper_title,
+                    **update,
+                },
+            )
+
         recorded_pdf_path = paper["pdf_path"]
         runtime_settings = settings.get_settings()
         if recorded_pdf_path:
             recorded_path = Path(recorded_pdf_path)
             if recorded_path.exists():
-                checksum, size_bytes = orw.get_pdf_integrity_metadata(recorded_path)
+                artifact = orw.inspect_pdf_file(recorded_path, progress_callback=forward_progress)
+                checksum = str(artifact["sha256"])
+                size_bytes = int(artifact["size_bytes"])
                 has_same_metadata = (
                     paper.get("pdf_sha256") == checksum and paper.get("pdf_size_bytes") == size_bytes
                 )
@@ -300,28 +365,48 @@ def download_paper(paper_id: str, tags: str | None = None) -> dict:
                     skipped_count += 1
                     notes.append(f"already-downloaded:{recorded_pdf_path}")
                 else:
-                    db.update_pdf_metadata(
-                        paper_id=paper_id,
-                        pdf_path=str(recorded_path),
-                        pdf_sha256=checksum,
-                        pdf_size_bytes=size_bytes,
-                    )
+                    _refresh_pdf_metadata_from_artifact(paper_id, artifact)
                     updated_count += 1
                     notes.append(f"metadata-refreshed:{recorded_pdf_path}")
             else:
                 notes.append(f"missing-recorded-path:{recorded_pdf_path}")
-                pdf_path = orw.download_pdf(paper_id, runtime_settings.papers_dir)
-                _refresh_pdf_metadata(paper_id, pdf_path)
+                artifact = orw.download_pdf_artifact(
+                    paper_id,
+                    runtime_settings.papers_dir,
+                    progress_callback=forward_progress,
+                )
+                _refresh_pdf_metadata_from_artifact(paper_id, artifact)
                 updated_count += 1
-                notes.append(f"saved:{pdf_path}")
+                notes.append(f"saved:{artifact['path']}")
         else:
-            pdf_path = orw.download_pdf(paper_id, runtime_settings.papers_dir)
-            _refresh_pdf_metadata(paper_id, pdf_path)
+            artifact = orw.download_pdf_artifact(
+                paper_id,
+                runtime_settings.papers_dir,
+                progress_callback=forward_progress,
+            )
+            _refresh_pdf_metadata_from_artifact(paper_id, artifact)
             updated_count += 1
-            notes.append(f"saved:{pdf_path}")
+            notes.append(f"saved:{artifact['path']}")
 
         if db.get_paper_forum_cache(paper_id) is None:
             try:
+                _emit_download_progress(
+                    progress_callback,
+                    {
+                        "paper_id": paper_id,
+                        "paper_title": paper_title,
+                        "phase": "caching-forum",
+                        "bytes_downloaded": (
+                            int(artifact["downloaded_bytes"]) if artifact is not None else 0
+                        ),
+                        "total_bytes": artifact["total_bytes"] if artifact is not None else None,
+                        "network_seconds": (
+                            float(artifact["network_seconds"]) if artifact is not None else 0.0
+                        ),
+                        "io_seconds": float(artifact["io_seconds"]) if artifact is not None else 0.0,
+                        "elapsed_seconds": time.perf_counter() - started_at,
+                    },
+                )
                 review_count, post_count = _cache_forum_data(paper_id)
             except Exception as exc:
                 failed_count += 1
@@ -347,6 +432,10 @@ def download_paper(paper_id: str, tags: str | None = None) -> dict:
             failures.append({"stage": "download", "error": str(exc)})
         raise
 
+    elapsed_seconds = time.perf_counter() - started_at
+    network_seconds = float(artifact["network_seconds"]) if artifact is not None else 0.0
+    io_seconds = float(artifact["io_seconds"]) if artifact is not None else 0.0
+
     return {
         "operation": "download",
         "paper_id": paper_id,
@@ -356,4 +445,13 @@ def download_paper(paper_id: str, tags: str | None = None) -> dict:
         "failed": failed_count,
         "failures": failures,
         "notes": notes,
+        "performance": {
+            "bytes_downloaded": int(artifact["downloaded_bytes"]) if artifact is not None else 0,
+            "total_bytes": artifact["total_bytes"] if artifact is not None else None,
+            "network_seconds": network_seconds,
+            "io_seconds": io_seconds,
+            "other_seconds": max(elapsed_seconds - network_seconds - io_seconds, 0.0),
+            "elapsed_seconds": elapsed_seconds,
+            "source": artifact["source"] if artifact is not None else None,
+        },
     }

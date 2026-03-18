@@ -52,8 +52,9 @@ After fetching metadata into the local DB, queue and drain the missing PDFs loca
 ```
 
 `worker run-downloads --enqueue-missing` reconciles the local DB, creates download jobs for papers
-that still need PDF work, runs local workers in parallel, and prints queue status while the jobs
-are draining. Use `--status-interval-seconds 0` to disable live status lines or `--json-output`
+that still need PDF work, runs local workers in parallel, and shows a live interactive dashboard on
+TTY terminals with per-worker paper progress plus an overall completion/utilization bar. Use
+`--status-interval-seconds 0` to disable periodic plain-text status snapshots or `--json-output`
 for machine-readable automation output.
 
 No dashboard command belongs in this repo.
@@ -116,9 +117,9 @@ openreview-scraper --help
 ## Validation
 
 ```bash
-python3 scripts/check_agent_docs.py
-python3 scripts/check_architecture.py
-python3 scripts/run_repo_checks.py tests
+uv run python scripts/check_agent_docs.py
+uv run python scripts/check_architecture.py
+uv run python scripts/run_repo_checks.py tests
 ```
 
 ## Repo Guide

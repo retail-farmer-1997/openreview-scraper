@@ -36,6 +36,9 @@ processed.
 - 2026-03-18: Added worker and CLI regression coverage for queue reconciliation, multi-worker
   draining, and human-readable status output; updated README with the post-fetch batch download
   workflow.
-- 2026-03-18: Validation passed with `python scripts/check_agent_docs.py`,
-  `python scripts/check_architecture.py`, and `python scripts/run_repo_checks.py tests` under
-  `uv run`.
+- 2026-03-18: Upgraded `worker run-downloads` from count-only status lines to streamed per-paper
+  progress events plus an interactive terminal dashboard with active paper titles, worker-slot
+  progress bars, and aggregate throughput/constraint reporting.
+- 2026-03-18: Validation passed for the richer runner with `uv run python
+  scripts/check_agent_docs.py`, `uv run python scripts/check_architecture.py`, and `uv run python
+  scripts/run_repo_checks.py tests`.

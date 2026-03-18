@@ -327,10 +327,77 @@ class OpenReviewNetworkTests(unittest.TestCase):
 
             with patch("openreview_scraper.openreview.get_client", return_value=fake_client):
                 pdf_path = orw.download_pdf("paper-api", output_dir)
+                self.assertEqual(fake_client.paper_id, "paper-api")
+                self.assertTrue(pdf_path.exists())
+                self.assertEqual(pdf_path.read_bytes(), b"%PDF-1.4 via api")
 
-        self.assertEqual(fake_client.paper_id, "paper-api")
-        self.assertTrue(pdf_path.exists())
-        self.assertEqual(pdf_path.read_bytes(), b"%PDF-1.4 via api")
+    def test_download_pdf_artifact_streams_progress_from_api_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            progress_updates: list[dict[str, object]] = []
+
+            class FakeResponse:
+                def __init__(self) -> None:
+                    self.headers = {"Content-Length": str(len(b"%PDF-1.4 streamed"))}
+                    self.closed = False
+
+                def iter_content(self, chunk_size: int):
+                    del chunk_size
+                    yield b"%PDF-1."
+                    yield b"4 streamed"
+
+                def raise_for_status(self) -> None:
+                    return None
+
+                def close(self) -> None:
+                    self.closed = True
+
+            class FakeSession:
+                def __init__(self) -> None:
+                    self.calls: list[dict[str, object]] = []
+
+                def get(
+                    self,
+                    url: str,
+                    *,
+                    params: dict[str, str],
+                    headers: dict[str, str],
+                    stream: bool,
+                    timeout: float,
+                ) -> FakeResponse:
+                    self.calls.append(
+                        {
+                            "url": url,
+                            "params": params,
+                            "headers": headers,
+                            "stream": stream,
+                            "timeout": timeout,
+                        }
+                    )
+                    return FakeResponse()
+
+            fake_session = FakeSession()
+            fake_client = types.SimpleNamespace(
+                session=fake_session,
+                pdf_url="https://api2.openreview.net/pdf",
+                headers={"Accept": "application/json"},
+                _OpenReviewClient__handle_response=lambda response: response,
+            )
+
+            with patch("openreview_scraper.openreview.get_client", return_value=fake_client):
+                artifact = orw.download_pdf_artifact(
+                    "paper-stream",
+                    output_dir,
+                    progress_callback=progress_updates.append,
+                )
+                self.assertTrue(Path(artifact["path"]).exists())
+                self.assertEqual(Path(artifact["path"]).read_bytes(), b"%PDF-1.4 streamed")
+
+        self.assertEqual(artifact["source"], "streaming-download")
+        self.assertGreaterEqual(len(progress_updates), 2)
+        self.assertEqual(progress_updates[-1]["bytes_downloaded"], len(b"%PDF-1.4 streamed"))
+        self.assertEqual(fake_session.calls[0]["params"], {"id": "paper-stream"})
+        self.assertTrue(fake_session.calls[0]["stream"])
 
     def test_download_pdf_uses_atomic_write_without_temp_leak(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

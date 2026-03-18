@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -115,15 +116,43 @@ class CLIIntegrationTests(unittest.TestCase):
             )
             fake_pdf_path = papers_dir / "paper-dl.pdf"
 
-            def fake_download(_paper_id: str, output_dir: Path) -> Path:
+            def fake_download(
+                _paper_id: str,
+                output_dir: Path,
+                *,
+                progress_callback=None,
+            ) -> dict:
                 output_dir.mkdir(parents=True, exist_ok=True)
-                fake_pdf_path.write_bytes(b"%PDF-1.4 test")
-                return fake_pdf_path
+                content = b"%PDF-1.4 test"
+                fake_pdf_path.write_bytes(content)
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "phase": "downloading",
+                            "bytes_downloaded": len(content),
+                            "total_bytes": len(content),
+                            "network_seconds": 0.01,
+                            "io_seconds": 0.01,
+                            "elapsed_seconds": 0.02,
+                            "source": "test-download",
+                        }
+                    )
+                return {
+                    "path": fake_pdf_path,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "size_bytes": len(content),
+                    "downloaded_bytes": len(content),
+                    "total_bytes": len(content),
+                    "network_seconds": 0.01,
+                    "io_seconds": 0.01,
+                    "elapsed_seconds": 0.02,
+                    "source": "test-download",
+                }
 
             with patch.dict(os.environ, env, clear=False):
                 settings.reset_settings_cache()
                 with patch("openreview_scraper.service.orw.fetch_paper", return_value=fake_paper):
-                    with patch("openreview_scraper.service.orw.download_pdf", side_effect=fake_download):
+                    with patch("openreview_scraper.service.orw.download_pdf_artifact", side_effect=fake_download):
                         with patch("openreview_scraper.service.orw.fetch_reviews", return_value=[]):
                             with patch(
                                 "openreview_scraper.service.orw.fetch_discussion",
@@ -201,20 +230,55 @@ class CLIIntegrationTests(unittest.TestCase):
             first_pdf_path = papers_dir / "paper-resume.pdf"
             redownload_path = papers_dir / "paper-resume-redownload.pdf"
 
-            def first_download(_paper_id: str, output_dir: Path) -> Path:
+            def first_download(
+                _paper_id: str,
+                output_dir: Path,
+                *,
+                progress_callback=None,
+            ) -> dict:
                 output_dir.mkdir(parents=True, exist_ok=True)
-                first_pdf_path.write_bytes(b"%PDF-1.4 first")
-                return first_pdf_path
+                content = b"%PDF-1.4 first"
+                first_pdf_path.write_bytes(content)
+                return {
+                    "path": first_pdf_path,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "size_bytes": len(content),
+                    "downloaded_bytes": len(content),
+                    "total_bytes": len(content),
+                    "network_seconds": 0.01,
+                    "io_seconds": 0.01,
+                    "elapsed_seconds": 0.02,
+                    "source": "test-download",
+                }
 
-            def second_download(_paper_id: str, output_dir: Path) -> Path:
+            def second_download(
+                _paper_id: str,
+                output_dir: Path,
+                *,
+                progress_callback=None,
+            ) -> dict:
                 output_dir.mkdir(parents=True, exist_ok=True)
-                redownload_path.write_bytes(b"%PDF-1.4 redownload")
-                return redownload_path
+                content = b"%PDF-1.4 redownload"
+                redownload_path.write_bytes(content)
+                return {
+                    "path": redownload_path,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "size_bytes": len(content),
+                    "downloaded_bytes": len(content),
+                    "total_bytes": len(content),
+                    "network_seconds": 0.01,
+                    "io_seconds": 0.01,
+                    "elapsed_seconds": 0.02,
+                    "source": "test-download",
+                }
 
             with patch.dict(os.environ, env, clear=False):
                 settings.reset_settings_cache()
                 with patch("openreview_scraper.service.orw.fetch_paper", return_value=fake_paper):
-                    with patch("openreview_scraper.service.orw.download_pdf", side_effect=first_download):
+                    with patch(
+                        "openreview_scraper.service.orw.download_pdf_artifact",
+                        side_effect=first_download,
+                    ):
                         with patch("openreview_scraper.service.orw.fetch_reviews", return_value=[]):
                             with patch(
                                 "openreview_scraper.service.orw.fetch_discussion",
@@ -228,7 +292,10 @@ class CLIIntegrationTests(unittest.TestCase):
 
                 first_pdf_path.unlink()
 
-                with patch("openreview_scraper.service.orw.download_pdf", side_effect=second_download):
+                with patch(
+                    "openreview_scraper.service.orw.download_pdf_artifact",
+                    side_effect=second_download,
+                ):
                     second = self.runner.invoke(cli, ["download", "paper-resume", "--json-output"])
 
             second_summary = self._extract_json_summary(second.output)
@@ -270,8 +337,13 @@ class CLIIntegrationTests(unittest.TestCase):
 
                 enqueue = self.runner.invoke(cli, ["worker", "enqueue-downloads", "--json-output"])
 
-                def fake_download(paper_id: str, tags: str | None = None) -> dict:
+                def fake_download(
+                    paper_id: str,
+                    tags: str | None = None,
+                    progress_callback=None,
+                ) -> dict:
                     del tags
+                    del progress_callback
                     pdf_path = papers_dir / f"{paper_id}.pdf"
                     pdf_path.parent.mkdir(parents=True, exist_ok=True)
                     pdf_path.write_bytes(b"%PDF-1.4 queued")
@@ -341,8 +413,13 @@ class CLIIntegrationTests(unittest.TestCase):
                         venueid="ICLR/2025",
                     )
 
-                def fake_download(paper_id: str, tags: str | None = None) -> dict:
+                def fake_download(
+                    paper_id: str,
+                    tags: str | None = None,
+                    progress_callback=None,
+                ) -> dict:
                     del tags
+                    del progress_callback
                     pdf_path = papers_dir / f"{paper_id}.pdf"
                     pdf_path.parent.mkdir(parents=True, exist_ok=True)
                     pdf_path.write_bytes(b"%PDF-1.4 batch")
@@ -384,6 +461,7 @@ class CLIIntegrationTests(unittest.TestCase):
             self.assertIn("Queued 3 download job(s)", run.output)
             self.assertIn("Starting 2 local download workers.", run.output)
             self.assertIn("Status: ", run.output)
+            self.assertIn("bound=", run.output)
             self.assertIn("Processed 3 download job(s): completed=3 failed=0", run.output)
             self.assertEqual(status_summary["counts"]["completed"], 3)
             self.assertEqual(status_summary["counts"]["pending"], 0)
@@ -454,15 +532,34 @@ class CLIIntegrationTests(unittest.TestCase):
                 has_decision=False,
             )
 
-            def fake_download(_paper_id: str, output_dir: Path) -> Path:
+            def fake_download(
+                _paper_id: str,
+                output_dir: Path,
+                *,
+                progress_callback=None,
+            ) -> dict:
                 output_dir.mkdir(parents=True, exist_ok=True)
-                fake_pdf_path.write_bytes(b"%PDF-1.4 cached")
-                return fake_pdf_path
+                content = b"%PDF-1.4 cached"
+                fake_pdf_path.write_bytes(content)
+                return {
+                    "path": fake_pdf_path,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "size_bytes": len(content),
+                    "downloaded_bytes": len(content),
+                    "total_bytes": len(content),
+                    "network_seconds": 0.01,
+                    "io_seconds": 0.01,
+                    "elapsed_seconds": 0.02,
+                    "source": "test-download",
+                }
 
             with patch.dict(os.environ, env, clear=False):
                 settings.reset_settings_cache()
                 with patch("openreview_scraper.service.orw.fetch_paper", return_value=fake_paper):
-                    with patch("openreview_scraper.service.orw.download_pdf", side_effect=fake_download):
+                    with patch(
+                        "openreview_scraper.service.orw.download_pdf_artifact",
+                        side_effect=fake_download,
+                    ):
                         with patch("openreview_scraper.service.orw.fetch_reviews", return_value=cached_reviews):
                             with patch(
                                 "openreview_scraper.service.orw.fetch_discussion",

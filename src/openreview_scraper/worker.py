@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import os
 import socket
+import threading
 import time
 from typing import Callable
 
@@ -12,6 +13,7 @@ from . import db, service, settings
 
 
 DownloadStatusCallback = Callable[[dict], None]
+DownloadProgressCallback = Callable[[dict], None]
 
 
 def _worker_id() -> str:
@@ -88,7 +90,26 @@ def run_next_sync_job() -> dict:
         }
 
 
-def run_next_download_job() -> dict:
+def _paper_display_title(paper_id: str) -> str:
+    paper = db.get_paper(paper_id)
+    if paper is None:
+        return paper_id
+    return str(paper.get("title") or paper_id)
+
+
+def _emit_download_progress(
+    progress_callback: DownloadProgressCallback | None,
+    payload: dict[str, object],
+) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(payload)
+
+
+def run_next_download_job(
+    *,
+    progress_callback: DownloadProgressCallback | None = None,
+) -> dict:
     """Run a single queued download job, if available."""
     db.migrate()
     runtime_settings = settings.get_settings()
@@ -101,11 +122,49 @@ def run_next_download_job() -> dict:
 
     job_id = int(job["id"])
     paper_id = str(job["paper_id"])
+    paper_title = _paper_display_title(paper_id)
+
+    def forward_progress(update: dict[str, object]) -> None:
+        _emit_download_progress(
+            progress_callback,
+            {
+                "kind": "progress",
+                "job_id": job_id,
+                "paper_id": paper_id,
+                "paper_title": paper_title,
+                "status": "running",
+                **update,
+            },
+        )
+
+    forward_progress(
+        {
+            "phase": "claimed",
+            "bytes_downloaded": 0,
+            "total_bytes": None,
+            "network_seconds": 0.0,
+            "io_seconds": 0.0,
+            "elapsed_seconds": 0.0,
+        }
+    )
     try:
-        summary = service.download_paper(paper_id=paper_id)
+        summary = service.download_paper(paper_id=paper_id, progress_callback=forward_progress)
         if summary["failed"] > 0:
             error = f"{summary['failed']} download item(s) failed"
             db.fail_download_job(job_id, error)
+            _emit_download_progress(
+                progress_callback,
+                {
+                    "kind": "finished",
+                    "job_id": job_id,
+                    "paper_id": paper_id,
+                    "paper_title": paper_title,
+                    "status": "failed",
+                    "phase": "failed",
+                    "error": error,
+                    "performance": summary.get("performance", {}),
+                },
+            )
             return {
                 "status": "failed",
                 "processed": True,
@@ -116,6 +175,18 @@ def run_next_download_job() -> dict:
             }
 
         db.complete_download_job(job_id)
+        _emit_download_progress(
+            progress_callback,
+            {
+                "kind": "finished",
+                "job_id": job_id,
+                "paper_id": paper_id,
+                "paper_title": paper_title,
+                "status": "completed",
+                "phase": "completed",
+                "performance": summary.get("performance", {}),
+            },
+        )
         return {
             "status": "completed",
             "processed": True,
@@ -125,6 +196,18 @@ def run_next_download_job() -> dict:
         }
     except Exception as exc:
         db.fail_download_job(job_id, str(exc))
+        _emit_download_progress(
+            progress_callback,
+            {
+                "kind": "finished",
+                "job_id": job_id,
+                "paper_id": paper_id,
+                "paper_title": paper_title,
+                "status": "failed",
+                "phase": "failed",
+                "error": str(exc),
+            },
+        )
         return {
             "status": "failed",
             "processed": True,
@@ -185,6 +268,11 @@ def run_download_worker(
         "continuous": continuous,
         "max_jobs": max_jobs,
         "last_status": last_result["status"] if last_result is not None else "idle",
+        "target_jobs": None,
+        "bytes_downloaded": 0,
+        "network_seconds": 0.0,
+        "io_seconds": 0.0,
+        "other_seconds": 0.0,
     }
 
 
@@ -196,9 +284,67 @@ def _fold_download_result(summary: dict, result: dict) -> None:
         summary["created"] += int(item_summary.get("created", 0))
         summary["updated"] += int(item_summary.get("updated", 0))
         summary["skipped"] += int(item_summary.get("skipped", 0))
+        performance = item_summary.get("performance", {})
+        summary["bytes_downloaded"] += int(performance.get("bytes_downloaded", 0))
+        summary["network_seconds"] += float(performance.get("network_seconds", 0.0))
+        summary["io_seconds"] += float(performance.get("io_seconds", 0.0))
+        summary["other_seconds"] += float(performance.get("other_seconds", 0.0))
     else:
         summary["failed"] += 1
     summary["last_status"] = result["status"]
+
+
+def _constraint_label(network_seconds: float, io_seconds: float, other_seconds: float) -> str:
+    totals = {
+        "network": max(network_seconds, 0.0),
+        "io": max(io_seconds, 0.0),
+        "other": max(other_seconds, 0.0),
+    }
+    dominant_name, dominant_value = max(totals.items(), key=lambda item: item[1])
+    total_seconds = sum(totals.values())
+    if total_seconds <= 0 or dominant_value <= 0:
+        return "idle"
+    if dominant_value / total_seconds < 0.55:
+        return "mixed"
+    return dominant_name
+
+
+def _build_download_metrics(
+    summary: dict,
+    *,
+    active_jobs: list[dict[str, object]],
+    elapsed_seconds: float,
+) -> dict[str, object]:
+    bytes_downloaded = int(summary["bytes_downloaded"])
+    network_seconds = float(summary["network_seconds"])
+    io_seconds = float(summary["io_seconds"])
+    other_seconds = float(summary["other_seconds"])
+
+    for job in active_jobs:
+        bytes_downloaded += int(job.get("bytes_downloaded", 0))
+        network = float(job.get("network_seconds", 0.0))
+        io_time = float(job.get("io_seconds", 0.0))
+        elapsed = float(job.get("elapsed_seconds", 0.0))
+        network_seconds += network
+        io_seconds += io_time
+        other_seconds += max(elapsed - network - io_time, 0.0)
+
+    papers_per_minute = 0.0
+    bytes_per_second = 0.0
+    if elapsed_seconds > 0:
+        papers_per_minute = (float(summary["processed"]) / elapsed_seconds) * 60.0
+        bytes_per_second = bytes_downloaded / elapsed_seconds
+
+    return {
+        "bytes_downloaded": bytes_downloaded,
+        "network_seconds": network_seconds,
+        "io_seconds": io_seconds,
+        "other_seconds": other_seconds,
+        "elapsed_seconds": elapsed_seconds,
+        "papers_per_minute": papers_per_minute,
+        "bytes_per_second": bytes_per_second,
+        "constraint": _constraint_label(network_seconds, io_seconds, other_seconds),
+    }
 
 
 def run_parallel_download_workers(
@@ -207,6 +353,7 @@ def run_parallel_download_workers(
     max_jobs: int | None = None,
     status_interval_seconds: float = 5.0,
     status_callback: DownloadStatusCallback | None = None,
+    progress_callback: DownloadProgressCallback | None = None,
 ) -> dict:
     """Run queued download jobs with multiple local workers until the queue is drained."""
     if worker_count < 1:
@@ -230,6 +377,11 @@ def run_parallel_download_workers(
         "max_jobs": max_jobs,
         "workers": worker_count,
         "last_status": "idle",
+        "target_jobs": 0,
+        "bytes_downloaded": 0,
+        "network_seconds": 0.0,
+        "io_seconds": 0.0,
+        "other_seconds": 0.0,
     }
 
     if max_jobs == 0:
@@ -237,13 +389,37 @@ def run_parallel_download_workers(
 
     submitted = 0
     status_timeout = None if status_interval_seconds == 0 else status_interval_seconds
-    futures: dict[Future, None] = {}
+    futures: dict[Future, int] = {}
+    active_jobs: dict[int, dict[str, object]] = {}
+    active_jobs_lock = threading.Lock()
+    started_at = time.perf_counter()
+    target_jobs = db.count_claimable_download_jobs()
+    if max_jobs is not None:
+        target_jobs = min(target_jobs, max_jobs)
+    summary["target_jobs"] = target_jobs
 
-    def submit(executor: ThreadPoolExecutor) -> bool:
+    def slot_progress_callback(slot_id: int) -> DownloadProgressCallback:
+        def callback(update: dict[str, object]) -> None:
+            event = {"slot": slot_id, **update}
+            with active_jobs_lock:
+                if event["kind"] == "finished":
+                    active_jobs.pop(slot_id, None)
+                else:
+                    active_jobs[slot_id] = event
+            _emit_download_progress(progress_callback, event)
+
+        return callback
+
+    def submit(executor: ThreadPoolExecutor, slot_id: int) -> bool:
         nonlocal submitted
-        if max_jobs is not None and submitted >= max_jobs:
+        if submitted >= target_jobs:
             return False
-        futures[executor.submit(run_next_download_job)] = None
+        futures[
+            executor.submit(
+                run_next_download_job,
+                progress_callback=slot_progress_callback(slot_id),
+            )
+        ] = slot_id
         submitted += 1
         return True
 
@@ -251,23 +427,41 @@ def run_parallel_download_workers(
         if status_callback is None:
             return
         queue_status = db.get_download_queue_status(limit=0)
+        with active_jobs_lock:
+            active_snapshot = [active_jobs[key].copy() for key in sorted(active_jobs)]
+        elapsed_seconds = time.perf_counter() - started_at
         status_callback(
             {
                 "workers": worker_count,
                 "processed": summary["processed"],
                 "completed": summary["completed"],
                 "failed": summary["failed"],
+                "target_jobs": target_jobs,
                 "counts": queue_status["counts"],
+                "active_jobs": active_snapshot,
+                "completed_performance": {
+                    "bytes_downloaded": int(summary["bytes_downloaded"]),
+                    "network_seconds": float(summary["network_seconds"]),
+                    "io_seconds": float(summary["io_seconds"]),
+                    "other_seconds": float(summary["other_seconds"]),
+                },
+                "metrics": _build_download_metrics(
+                    summary,
+                    active_jobs=active_snapshot,
+                    elapsed_seconds=elapsed_seconds,
+                ),
             }
         )
 
-    initial_slots = worker_count if max_jobs is None else min(worker_count, max_jobs)
-    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="download-worker") as executor:
-        for _ in range(initial_slots):
-            submit(executor)
+    emit_status()
+    if target_jobs == 0:
+        summary.update(_build_download_metrics(summary, active_jobs=[], elapsed_seconds=0.0))
+        return summary
 
-        if futures and status_callback is not None:
-            emit_status()
+    initial_slots = min(worker_count, target_jobs)
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="download-worker") as executor:
+        for slot_id in range(initial_slots):
+            submit(executor, slot_id)
 
         while futures:
             done, _ = wait(set(futures), timeout=status_timeout, return_when=FIRST_COMPLETED)
@@ -276,15 +470,21 @@ def run_parallel_download_workers(
                 continue
 
             for future in done:
-                futures.pop(future, None)
+                slot_id = futures.pop(future)
                 result = future.result()
                 if not result["processed"]:
                     summary["last_status"] = result["status"]
+                    submit(executor, slot_id)
                     continue
 
                 _fold_download_result(summary, result)
-                submit(executor)
+                submit(executor, slot_id)
 
+            emit_status()
+
+    elapsed_seconds = time.perf_counter() - started_at
+    summary.update(_build_download_metrics(summary, active_jobs=[], elapsed_seconds=elapsed_seconds))
+    emit_status()
     return summary
 
 

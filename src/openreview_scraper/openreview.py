@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import requests
 import tempfile
 import time
 from typing import Any, Callable, TypeVar
@@ -16,6 +17,8 @@ from .settings import get_settings
 
 
 _T = TypeVar("_T")
+DownloadProgressCallback = Callable[[dict[str, object]], None]
+DOWNLOAD_CHUNK_SIZE_BYTES = 64 * 1024
 
 
 class NetworkOperationError(RuntimeError):
@@ -156,16 +159,110 @@ def _validate_pdf_bytes(content: bytes, operation_name: str) -> None:
 
 def get_pdf_integrity_metadata(pdf_path: Path) -> tuple[str, int]:
     """Validate a local PDF and return (sha256, size_bytes)."""
-    content = pdf_path.read_bytes()
-    _validate_pdf_bytes(content, f"validate existing file '{pdf_path.name}'")
-    checksum = hashlib.sha256(content).hexdigest()
-    return checksum, len(content)
+    artifact = inspect_pdf_file(pdf_path)
+    return str(artifact["sha256"]), int(artifact["size_bytes"])
 
 
-def _download_pdf_bytes_via_api_client(paper_id: str, operation_name: str) -> bytes:
+def _emit_download_progress(
+    progress_callback: DownloadProgressCallback | None,
+    payload: dict[str, object],
+) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(payload)
+
+
+def _parse_content_length(raw_value: str | None) -> int | None:
+    if raw_value is None:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def inspect_pdf_file(
+    pdf_path: Path,
+    *,
+    progress_callback: DownloadProgressCallback | None = None,
+) -> dict[str, object]:
+    """Stream-validate a local PDF and return integrity/performance metadata."""
+    operation_name = f"validate existing file '{pdf_path.name}'"
+    total_bytes = pdf_path.stat().st_size
+    checksum = hashlib.sha256()
+    header = bytearray()
+    size_bytes = 0
+    io_seconds = 0.0
+    started_at = time.perf_counter()
+
+    _emit_download_progress(
+        progress_callback,
+        {
+            "phase": "validating-local-file",
+            "bytes_downloaded": 0,
+            "total_bytes": total_bytes,
+            "network_seconds": 0.0,
+            "io_seconds": 0.0,
+            "elapsed_seconds": 0.0,
+            "source": "existing-file",
+        },
+    )
+
+    with pdf_path.open("rb") as handle:
+        while True:
+            io_started_at = time.perf_counter()
+            chunk = handle.read(DOWNLOAD_CHUNK_SIZE_BYTES)
+            if chunk:
+                checksum.update(chunk)
+                size_bytes += len(chunk)
+                remaining_header_bytes = max(0, 5 - len(header))
+                if remaining_header_bytes:
+                    header.extend(chunk[:remaining_header_bytes])
+            io_seconds += time.perf_counter() - io_started_at
+
+            if not chunk:
+                break
+
+            _emit_download_progress(
+                progress_callback,
+                {
+                    "phase": "validating-local-file",
+                    "bytes_downloaded": size_bytes,
+                    "total_bytes": total_bytes,
+                    "network_seconds": 0.0,
+                    "io_seconds": io_seconds,
+                    "elapsed_seconds": time.perf_counter() - started_at,
+                    "source": "existing-file",
+                },
+            )
+
+    _validate_pdf_bytes(bytes(header), operation_name)
+    elapsed_seconds = time.perf_counter() - started_at
+    return {
+        "path": pdf_path,
+        "sha256": checksum.hexdigest(),
+        "size_bytes": size_bytes,
+        "downloaded_bytes": size_bytes,
+        "total_bytes": total_bytes,
+        "network_seconds": 0.0,
+        "io_seconds": io_seconds,
+        "elapsed_seconds": elapsed_seconds,
+        "source": "existing-file",
+    }
+
+
+def _download_pdf_bytes_via_api_client(
+    paper_id: str,
+    operation_name: str,
+    *,
+    client: Any | None = None,
+) -> bytes:
     """Download raw PDF bytes from the authenticated OpenReview API client."""
-    client = get_client()
-    content = _retry_openreview_call(operation_name, lambda: client.get_pdf(id=paper_id))
+    client = get_client() if client is None else client
+    content = _retry_openreview_call(operation_name, lambda: client.get_pdf(paper_id))
     if not isinstance(content, (bytes, bytearray)):
         raise PDFValidationError(
             f"Unexpected API PDF payload type during '{operation_name}': {type(content)!r}"
@@ -173,6 +270,239 @@ def _download_pdf_bytes_via_api_client(paper_id: str, operation_name: str) -> by
     content_bytes = bytes(content)
     _validate_pdf_bytes(content_bytes, operation_name)
     return content_bytes
+
+
+def _write_pdf_bytes_to_disk(
+    paper_id: str,
+    output_dir: Path,
+    content: bytes,
+    operation_name: str,
+    *,
+    progress_callback: DownloadProgressCallback | None = None,
+) -> dict[str, object]:
+    pdf_path = output_dir / f"{paper_id}.pdf"
+    checksum = hashlib.sha256(content).hexdigest()
+    total_bytes = len(content)
+    io_seconds = 0.0
+    started_at = time.perf_counter()
+    tmp_path_obj: Path | None = None
+
+    _emit_download_progress(
+        progress_callback,
+        {
+            "phase": "downloading",
+            "bytes_downloaded": 0,
+            "total_bytes": total_bytes,
+            "network_seconds": 0.0,
+            "io_seconds": 0.0,
+            "elapsed_seconds": 0.0,
+            "source": "buffered-download",
+        },
+    )
+
+    tmp_file = tempfile.NamedTemporaryFile(
+        mode="wb",
+        dir=output_dir,
+        prefix=f"{paper_id}.",
+        suffix=".tmp",
+        delete=False,
+    )
+    try:
+        with tmp_file as handle:
+            io_started_at = time.perf_counter()
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+            io_seconds += time.perf_counter() - io_started_at
+
+        _emit_download_progress(
+            progress_callback,
+            {
+                "phase": "downloading",
+                "bytes_downloaded": total_bytes,
+                "total_bytes": total_bytes,
+                "network_seconds": 0.0,
+                "io_seconds": io_seconds,
+                "elapsed_seconds": time.perf_counter() - started_at,
+                "source": "buffered-download",
+            },
+        )
+
+        tmp_path_obj = Path(tmp_file.name)
+        io_started_at = time.perf_counter()
+        tmp_path_obj.replace(pdf_path)
+        io_seconds += time.perf_counter() - io_started_at
+    finally:
+        if tmp_path_obj is not None and tmp_path_obj.exists():
+            tmp_path_obj.unlink()
+
+    return {
+        "path": pdf_path,
+        "sha256": checksum,
+        "size_bytes": total_bytes,
+        "downloaded_bytes": total_bytes,
+        "total_bytes": total_bytes,
+        "network_seconds": 0.0,
+        "io_seconds": io_seconds,
+        "elapsed_seconds": time.perf_counter() - started_at,
+        "source": "buffered-download",
+    }
+
+
+def _download_pdf_artifact_via_buffered_client(
+    client: Any,
+    paper_id: str,
+    output_dir: Path,
+    operation_name: str,
+    *,
+    progress_callback: DownloadProgressCallback | None = None,
+) -> dict[str, object]:
+    network_started_at = time.perf_counter()
+    content = _download_pdf_bytes_via_api_client(paper_id, operation_name, client=client)
+    artifact = _write_pdf_bytes_to_disk(
+        paper_id,
+        output_dir,
+        content,
+        operation_name,
+        progress_callback=progress_callback,
+    )
+    artifact["network_seconds"] = time.perf_counter() - network_started_at - float(
+        artifact["io_seconds"]
+    )
+    artifact["elapsed_seconds"] = time.perf_counter() - network_started_at
+    return artifact
+
+
+def _download_pdf_artifact_via_streaming_client(
+    client: Any,
+    paper_id: str,
+    output_dir: Path,
+    operation_name: str,
+    *,
+    progress_callback: DownloadProgressCallback | None = None,
+) -> dict[str, object]:
+    runtime_settings = get_settings()
+    headers = client.headers.copy()
+    headers["content-type"] = "application/pdf"
+    handle_response = getattr(client, "_OpenReviewClient__handle_response", None)
+
+    def operation() -> dict[str, object]:
+        response: requests.Response | None = None
+        tmp_path_obj: Path | None = None
+        started_at = time.perf_counter()
+        network_seconds = 0.0
+        io_seconds = 0.0
+        downloaded_bytes = 0
+        checksum = hashlib.sha256()
+        header = bytearray()
+
+        try:
+            request_started_at = time.perf_counter()
+            response = client.session.get(
+                client.pdf_url,
+                params={"id": paper_id},
+                headers=headers,
+                stream=True,
+                timeout=runtime_settings.http_timeout_seconds,
+            )
+            network_seconds += time.perf_counter() - request_started_at
+
+            if callable(handle_response):
+                response = handle_response(response)
+            else:
+                response.raise_for_status()
+
+            total_bytes = _parse_content_length(response.headers.get("Content-Length"))
+            _emit_download_progress(
+                progress_callback,
+                {
+                    "phase": "downloading",
+                    "bytes_downloaded": 0,
+                    "total_bytes": total_bytes,
+                    "network_seconds": network_seconds,
+                    "io_seconds": io_seconds,
+                    "elapsed_seconds": time.perf_counter() - started_at,
+                    "source": "streaming-download",
+                },
+            )
+
+            tmp_file = tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=output_dir,
+                prefix=f"{paper_id}.",
+                suffix=".tmp",
+                delete=False,
+            )
+            with tmp_file as handle:
+                iterator = response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE_BYTES)
+                while True:
+                    wait_started_at = time.perf_counter()
+                    try:
+                        chunk = next(iterator)
+                    except StopIteration:
+                        break
+                    except requests.RequestException as exc:
+                        raise openreview.OpenReviewException(str(exc)) from exc
+                    network_seconds += time.perf_counter() - wait_started_at
+
+                    if not chunk:
+                        continue
+
+                    io_started_at = time.perf_counter()
+                    remaining_header_bytes = max(0, 5 - len(header))
+                    if remaining_header_bytes:
+                        header.extend(chunk[:remaining_header_bytes])
+                    handle.write(chunk)
+                    checksum.update(chunk)
+                    downloaded_bytes += len(chunk)
+                    io_seconds += time.perf_counter() - io_started_at
+
+                    _emit_download_progress(
+                        progress_callback,
+                        {
+                            "phase": "downloading",
+                            "bytes_downloaded": downloaded_bytes,
+                            "total_bytes": total_bytes,
+                            "network_seconds": network_seconds,
+                            "io_seconds": io_seconds,
+                            "elapsed_seconds": time.perf_counter() - started_at,
+                            "source": "streaming-download",
+                        },
+                    )
+
+                io_started_at = time.perf_counter()
+                handle.flush()
+                os.fsync(handle.fileno())
+                io_seconds += time.perf_counter() - io_started_at
+
+            _validate_pdf_bytes(bytes(header), operation_name)
+
+            pdf_path = output_dir / f"{paper_id}.pdf"
+            tmp_path_obj = Path(tmp_file.name)
+            io_started_at = time.perf_counter()
+            tmp_path_obj.replace(pdf_path)
+            io_seconds += time.perf_counter() - io_started_at
+
+            return {
+                "path": pdf_path,
+                "sha256": checksum.hexdigest(),
+                "size_bytes": downloaded_bytes,
+                "downloaded_bytes": downloaded_bytes,
+                "total_bytes": total_bytes,
+                "network_seconds": network_seconds,
+                "io_seconds": io_seconds,
+                "elapsed_seconds": time.perf_counter() - started_at,
+                "source": "streaming-download",
+            }
+        except requests.RequestException as exc:
+            raise openreview.OpenReviewException(str(exc)) from exc
+        finally:
+            if response is not None:
+                response.close()
+            if tmp_path_obj is not None and tmp_path_obj.exists():
+                tmp_path_obj.unlink()
+
+    return _retry_openreview_call(operation_name, operation)
 
 
 def get_client() -> openreview.api.OpenReviewClient:
@@ -313,40 +643,45 @@ def fetch_paper(paper_id: str) -> Paper | None:
     return Paper.from_openreview_note(note)
 
 
-def download_pdf(paper_id: str, output_dir: Path) -> Path:
-    """Download a paper's PDF to the specified directory."""
+def download_pdf_artifact(
+    paper_id: str,
+    output_dir: Path,
+    *,
+    progress_callback: DownloadProgressCallback | None = None,
+) -> dict[str, object]:
+    """Download a paper's PDF and return file/performance metadata."""
     output_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = output_dir / f"{paper_id}.pdf"
 
     if pdf_path.exists():
-        get_pdf_integrity_metadata(pdf_path)
-        return pdf_path
+        return inspect_pdf_file(pdf_path, progress_callback=progress_callback)
 
     operation_name = f"download PDF for paper '{paper_id}'"
-    content = _download_pdf_bytes_via_api_client(paper_id, operation_name)
-
-    tmp_path_obj: Path | None = None
-    tmp_file = tempfile.NamedTemporaryFile(
-        mode="wb",
-        dir=output_dir,
-        prefix=f"{paper_id}.",
-        suffix=".tmp",
-        delete=False,
+    client = get_client()
+    has_streaming_client = all(
+        hasattr(client, attribute) for attribute in ("session", "pdf_url", "headers")
     )
-    try:
-        with tmp_file as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
+    if has_streaming_client:
+        return _download_pdf_artifact_via_streaming_client(
+            client,
+            paper_id,
+            output_dir,
+            operation_name,
+            progress_callback=progress_callback,
+        )
+    return _download_pdf_artifact_via_buffered_client(
+        client,
+        paper_id,
+        output_dir,
+        operation_name,
+        progress_callback=progress_callback,
+    )
 
-        tmp_path_obj = Path(tmp_file.name)
-        tmp_path_obj.replace(pdf_path)
-    finally:
-        if tmp_path_obj is not None and tmp_path_obj.exists():
-            tmp_path_obj.unlink()
 
-    get_pdf_integrity_metadata(pdf_path)
-    return pdf_path
+def download_pdf(paper_id: str, output_dir: Path) -> Path:
+    """Download a paper's PDF to the specified directory."""
+    artifact = download_pdf_artifact(paper_id, output_dir)
+    return Path(artifact["path"])
 
 
 def fetch_reviews(paper_id: str) -> list[Review]:
