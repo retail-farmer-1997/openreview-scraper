@@ -318,6 +318,76 @@ class CLIIntegrationTests(unittest.TestCase):
             self.assertEqual(db_summary["papers"]["downloaded_recorded"], 2)
             self.assertEqual(db_summary["download_jobs"]["completed"], 2)
 
+    def test_worker_run_downloads_can_enqueue_and_drain_in_parallel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "cli-parallel-download-worker.db"
+            papers_dir = Path(tmpdir) / "papers"
+            env = {
+                "OPENREVIEW_SCRAPER_DB_PATH": str(db_path),
+                "OPENREVIEW_SCRAPER_PAPERS_DIR": str(papers_dir),
+                "OPENREVIEW_SCRAPER_DOWNLOAD_JOB_LEASE_SECONDS": "60",
+            }
+
+            with patch.dict(os.environ, env, clear=False):
+                settings.reset_settings_cache()
+                db.migrate()
+                for paper_id in ("paper-b1", "paper-b2", "paper-b3"):
+                    db.upsert_paper(
+                        paper_id=paper_id,
+                        title=f"Batch Paper {paper_id}",
+                        authors=["Alice"],
+                        abstract="A",
+                        venue="ICLR 2025 Oral",
+                        venueid="ICLR/2025",
+                    )
+
+                def fake_download(paper_id: str, tags: str | None = None) -> dict:
+                    del tags
+                    pdf_path = papers_dir / f"{paper_id}.pdf"
+                    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+                    pdf_path.write_bytes(b"%PDF-1.4 batch")
+                    db.update_pdf_metadata(
+                        paper_id=paper_id,
+                        pdf_path=str(pdf_path),
+                        pdf_sha256=f"sha-{paper_id}",
+                        pdf_size_bytes=len(b"%PDF-1.4 batch"),
+                    )
+                    return {
+                        "operation": "download",
+                        "paper_id": paper_id,
+                        "created": 0,
+                        "updated": 1,
+                        "skipped": 0,
+                        "failed": 0,
+                        "failures": [],
+                        "notes": [f"saved:{pdf_path}"],
+                    }
+
+                with patch("openreview_scraper.worker.service.download_paper", side_effect=fake_download):
+                    run = self.runner.invoke(
+                        cli,
+                        [
+                            "worker",
+                            "run-downloads",
+                            "--enqueue-missing",
+                            "--workers",
+                            "2",
+                            "--status-interval-seconds",
+                            "0.01",
+                        ],
+                    )
+
+                download_status = self.runner.invoke(cli, ["worker", "download-status", "--json-output"])
+
+            status_summary = self._extract_json_summary(download_status.output)
+            self.assertEqual(run.exit_code, 0, run.output)
+            self.assertIn("Queued 3 download job(s)", run.output)
+            self.assertIn("Starting 2 local download workers.", run.output)
+            self.assertIn("Status: ", run.output)
+            self.assertIn("Processed 3 download job(s): completed=3 failed=0", run.output)
+            self.assertEqual(status_summary["counts"]["completed"], 3)
+            self.assertEqual(status_summary["counts"]["pending"], 0)
+
     def test_download_caches_forum_data_and_cli_reads_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "cli-forum-cache.db"

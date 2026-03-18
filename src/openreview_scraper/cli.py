@@ -250,6 +250,11 @@ def worker_enqueue_downloads(limit: int | None, json_output: bool) -> None:
 
 @worker_commands.command("run-downloads")
 @click.option(
+    "--enqueue-missing",
+    is_flag=True,
+    help="Queue papers from the local DB whose PDFs need download or reconciliation before running",
+)
+@click.option(
     "--continuous",
     is_flag=True,
     help="Keep polling for new download jobs instead of exiting when the queue is empty",
@@ -262,23 +267,84 @@ def worker_enqueue_downloads(limit: int | None, json_output: bool) -> None:
     help="Idle wait time between polling attempts in continuous mode",
 )
 @click.option(
+    "--workers",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Number of local download workers to run in parallel",
+)
+@click.option(
+    "--status-interval-seconds",
+    type=click.FloatRange(min=0.0),
+    default=2.0,
+    show_default=True,
+    help="How often to print queue status while local workers are running; 0 disables updates",
+)
+@click.option(
     "--max-jobs",
     type=click.IntRange(min=1),
     help="Stop after processing N jobs even if the queue is not empty",
 )
 @click.option("--json-output", is_flag=True, help="Emit machine-readable JSON summary")
 def worker_run_downloads(
+    enqueue_missing: bool,
     continuous: bool,
     poll_interval_seconds: float,
+    workers: int,
+    status_interval_seconds: float,
     max_jobs: int | None,
     json_output: bool,
 ) -> None:
     """Run background download jobs until the queue is drained or limits are reached."""
-    summary = worker.run_download_worker(
-        continuous=continuous,
-        poll_interval_seconds=poll_interval_seconds,
-        max_jobs=max_jobs,
-    )
+    if continuous and workers > 1:
+        raise click.ClickException("--continuous only supports --workers 1")
+
+    enqueue_summary: dict | None = None
+    if enqueue_missing:
+        enqueue_summary = worker.enqueue_reconcile_download_requests()
+        if not json_output:
+            click.echo(
+                f"Queued {enqueue_summary['created']} download job(s) from "
+                f"{enqueue_summary['candidates']} candidate paper(s); skipped "
+                f"{enqueue_summary['skipped']} already active."
+            )
+
+    if not json_output and not continuous and workers > 1:
+        click.echo(f"Starting {workers} local download workers.")
+
+    def emit_status(snapshot: dict) -> None:
+        counts = snapshot["counts"]
+        click.echo(
+            "Status: "
+            f"pending={counts['pending']} "
+            f"running={counts['running']} "
+            f"completed={counts['completed']} "
+            f"failed={counts['failed']} "
+            f"processed={snapshot['processed']}"
+        )
+
+    status_callback = None
+    if not json_output and not continuous and workers > 1 and status_interval_seconds > 0:
+        status_callback = emit_status
+
+    if continuous:
+        summary = worker.run_download_worker(
+            continuous=True,
+            poll_interval_seconds=poll_interval_seconds,
+            max_jobs=max_jobs,
+        )
+        summary["workers"] = 1
+    else:
+        summary = worker.run_parallel_download_workers(
+            worker_count=workers,
+            max_jobs=max_jobs,
+            status_interval_seconds=status_interval_seconds,
+            status_callback=status_callback,
+        )
+
+    if enqueue_summary is not None:
+        summary = {**summary, "enqueue": enqueue_summary}
+
     if json_output:
         click.echo(json.dumps(summary, sort_keys=True))
         return

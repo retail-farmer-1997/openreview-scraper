@@ -41,6 +41,21 @@ Grouped commands:
 - `worker run-downloads`
 - `worker download-status`
 
+## Batch Download Workflow
+
+After fetching metadata into the local DB, queue and drain the missing PDFs locally with:
+
+```bash
+./openreview-scraper fetch ICLR 2025 oral
+./openreview-scraper worker run-downloads --enqueue-missing --workers 8
+./openreview-scraper worker download-status
+```
+
+`worker run-downloads --enqueue-missing` reconciles the local DB, creates download jobs for papers
+that still need PDF work, runs local workers in parallel, and prints queue status while the jobs
+are draining. Use `--status-interval-seconds 0` to disable live status lines or `--json-output`
+for machine-readable automation output.
+
 No dashboard command belongs in this repo.
 
 ## Runtime Configuration

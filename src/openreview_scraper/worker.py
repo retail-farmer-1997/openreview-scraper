@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import os
 import socket
 import time
+from typing import Callable
 
 from . import db, service, settings
+
+
+DownloadStatusCallback = Callable[[dict], None]
 
 
 def _worker_id() -> str:
@@ -181,6 +186,106 @@ def run_download_worker(
         "max_jobs": max_jobs,
         "last_status": last_result["status"] if last_result is not None else "idle",
     }
+
+
+def _fold_download_result(summary: dict, result: dict) -> None:
+    summary["processed"] += 1
+    if result["status"] == "completed":
+        summary["completed"] += 1
+        item_summary = result.get("summary", {})
+        summary["created"] += int(item_summary.get("created", 0))
+        summary["updated"] += int(item_summary.get("updated", 0))
+        summary["skipped"] += int(item_summary.get("skipped", 0))
+    else:
+        summary["failed"] += 1
+    summary["last_status"] = result["status"]
+
+
+def run_parallel_download_workers(
+    *,
+    worker_count: int,
+    max_jobs: int | None = None,
+    status_interval_seconds: float = 5.0,
+    status_callback: DownloadStatusCallback | None = None,
+) -> dict:
+    """Run queued download jobs with multiple local workers until the queue is drained."""
+    if worker_count < 1:
+        raise ValueError("worker_count must be >= 1")
+    if status_interval_seconds < 0:
+        raise ValueError("status_interval_seconds must be >= 0")
+    if max_jobs is not None and max_jobs < 1:
+        raise ValueError("max_jobs must be >= 1")
+
+    db.migrate()
+
+    summary = {
+        "operation": "run-downloads",
+        "processed": 0,
+        "completed": 0,
+        "failed": 0,
+        "created": 0,
+        "updated": 0,
+        "skipped": 0,
+        "continuous": False,
+        "max_jobs": max_jobs,
+        "workers": worker_count,
+        "last_status": "idle",
+    }
+
+    if max_jobs == 0:
+        return summary
+
+    submitted = 0
+    status_timeout = None if status_interval_seconds == 0 else status_interval_seconds
+    futures: dict[Future, None] = {}
+
+    def submit(executor: ThreadPoolExecutor) -> bool:
+        nonlocal submitted
+        if max_jobs is not None and submitted >= max_jobs:
+            return False
+        futures[executor.submit(run_next_download_job)] = None
+        submitted += 1
+        return True
+
+    def emit_status() -> None:
+        if status_callback is None:
+            return
+        queue_status = db.get_download_queue_status(limit=0)
+        status_callback(
+            {
+                "workers": worker_count,
+                "processed": summary["processed"],
+                "completed": summary["completed"],
+                "failed": summary["failed"],
+                "counts": queue_status["counts"],
+            }
+        )
+
+    initial_slots = worker_count if max_jobs is None else min(worker_count, max_jobs)
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="download-worker") as executor:
+        for _ in range(initial_slots):
+            submit(executor)
+
+        if futures and status_callback is not None:
+            emit_status()
+
+        while futures:
+            done, _ = wait(set(futures), timeout=status_timeout, return_when=FIRST_COMPLETED)
+            if not done:
+                emit_status()
+                continue
+
+            for future in done:
+                futures.pop(future, None)
+                result = future.result()
+                if not result["processed"]:
+                    summary["last_status"] = result["status"]
+                    continue
+
+                _fold_download_result(summary, result)
+                submit(executor)
+
+    return summary
 
 
 def get_download_queue_status(limit: int = 20) -> dict:

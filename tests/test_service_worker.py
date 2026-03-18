@@ -163,6 +163,72 @@ class ServiceWorkerTests(unittest.TestCase):
             self.assertEqual(jobs[0]["paper_id"], "paper-download")
             self.assertEqual(jobs[0]["status"], "completed")
 
+    def test_parallel_download_workers_drain_queue_and_report_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "parallel-download-worker.db"
+            papers_dir = Path(tmpdir) / "papers"
+            env = {
+                "OPENREVIEW_SCRAPER_DB_PATH": str(db_path),
+                "OPENREVIEW_SCRAPER_PAPERS_DIR": str(papers_dir),
+                "OPENREVIEW_SCRAPER_DOWNLOAD_JOB_LEASE_SECONDS": "60",
+            }
+
+            with patch.dict(os.environ, env, clear=False):
+                settings.reset_settings_cache()
+                db.migrate()
+                for paper_id in ("paper-p1", "paper-p2", "paper-p3"):
+                    db.upsert_paper(
+                        paper_id=paper_id,
+                        title=f"Queued {paper_id}",
+                        authors=["Alice"],
+                        abstract="A",
+                        venue="ICLR 2025 Oral",
+                        venueid="ICLR/2025",
+                    )
+
+                enqueue = worker.enqueue_reconcile_download_requests()
+                status_snapshots: list[dict] = []
+
+                def fake_download(paper_id: str, tags: str | None = None) -> dict:
+                    del tags
+                    pdf_path = papers_dir / f"{paper_id}.pdf"
+                    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+                    pdf_path.write_bytes(b"%PDF-1.4 parallel")
+                    db.update_pdf_metadata(
+                        paper_id=paper_id,
+                        pdf_path=str(pdf_path),
+                        pdf_sha256=f"sha-{paper_id}",
+                        pdf_size_bytes=len(b"%PDF-1.4 parallel"),
+                    )
+                    return {
+                        "operation": "download",
+                        "paper_id": paper_id,
+                        "created": 0,
+                        "updated": 1,
+                        "skipped": 0,
+                        "failed": 0,
+                        "failures": [],
+                        "notes": [f"saved:{pdf_path}"],
+                    }
+
+                with patch("openreview_scraper.worker.service.download_paper", side_effect=fake_download):
+                    result = worker.run_parallel_download_workers(
+                        worker_count=2,
+                        status_interval_seconds=0.01,
+                        status_callback=status_snapshots.append,
+                    )
+
+                queue_status = worker.get_download_queue_status(limit=5)
+
+            self.assertEqual(enqueue["created"], 3)
+            self.assertEqual(result["processed"], 3)
+            self.assertEqual(result["completed"], 3)
+            self.assertEqual(result["failed"], 0)
+            self.assertEqual(result["workers"], 2)
+            self.assertTrue(status_snapshots)
+            self.assertEqual(queue_status["counts"]["completed"], 3)
+            self.assertEqual(queue_status["counts"]["pending"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
