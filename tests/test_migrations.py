@@ -59,6 +59,7 @@ class MigrationTests(unittest.TestCase):
                     "0004_worker_sync_jobs.sql",
                     "0005_download_jobs.sql",
                     "0006_forum_cache.sql",
+                    "0007_download_priority.sql",
                 ],
             )
             with closing(sqlite3.connect(db_path)) as conn:
@@ -88,6 +89,11 @@ class MigrationTests(unittest.TestCase):
                 }
                 self.assertIn("pdf_sha256", columns)
                 self.assertIn("pdf_size_bytes", columns)
+                download_job_columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(download_jobs)").fetchall()
+                }
+                self.assertIn("download_priority", download_job_columns)
 
     def test_migrations_are_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -106,6 +112,7 @@ class MigrationTests(unittest.TestCase):
                     "0004_worker_sync_jobs.sql",
                     "0005_download_jobs.sql",
                     "0006_forum_cache.sql",
+                    "0007_download_priority.sql",
                 ],
             )
             self.assertEqual(second, [])
@@ -131,6 +138,7 @@ class MigrationTests(unittest.TestCase):
                     "0004_worker_sync_jobs.sql",
                     "0005_download_jobs.sql",
                     "0006_forum_cache.sql",
+                    "0007_download_priority.sql",
                 ],
             )
             self.assertEqual(second, [])
@@ -177,6 +185,7 @@ class MigrationTests(unittest.TestCase):
                     "0004_worker_sync_jobs.sql",
                     "0005_download_jobs.sql",
                     "0006_forum_cache.sql",
+                    "0007_download_priority.sql",
                 ],
             )
             with closing(sqlite3.connect(db_path)) as conn:
@@ -186,7 +195,8 @@ class MigrationTests(unittest.TestCase):
                     "WHERE version IN ("
                     "'0001_initial.sql', '0002_pdf_metadata.sql', "
                     "'0003_scale_indexes.sql', '0004_worker_sync_jobs.sql', "
-                    "'0005_download_jobs.sql', '0006_forum_cache.sql'"
+                    "'0005_download_jobs.sql', '0006_forum_cache.sql', "
+                    "'0007_download_priority.sql'"
                     ")"
                 ).fetchone()[0]
                 author_links = conn.execute(
@@ -196,7 +206,7 @@ class MigrationTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM paper_keywords WHERE paper_id = 'legacy-paper'"
                 ).fetchone()[0]
             self.assertEqual(paper_count, 1)
-            self.assertEqual(migration_rows, 6)
+            self.assertEqual(migration_rows, 7)
             self.assertEqual(author_links, 1)
             self.assertEqual(keyword_links, 1)
 

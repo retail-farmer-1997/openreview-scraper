@@ -62,7 +62,9 @@ respect low server-side rate limits without requiring per-run flags, and the liv
 status includes request counts plus any active throttle timer. When OpenReview returns 429s, the
 scraper now uses an additive-increase / multiplicative-decrease controller on top of the reset
 window wait so local workers automatically slow down after rate-limit pressure and only recover
-gradually after clean requests.
+gradually after clean requests. Download queue ordering is priority-first: oral papers are always
+claimed before spotlight papers, spotlight before poster, and poster before all other venues; FIFO
+ordering only applies within the same priority bucket.
 
 No dashboard command belongs in this repo.
 

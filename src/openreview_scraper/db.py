@@ -81,6 +81,10 @@ NORMALIZED_RELATION_TABLES = (
 )
 JOB_STATUSES = ("pending", "running", "completed", "failed")
 NORMALIZED_RELATIONS_BACKFILL_VERSION = "data:normalized-relations-backfill-v1"
+DOWNLOAD_PRIORITY_ORAL = 0
+DOWNLOAD_PRIORITY_SPOTLIGHT = 1
+DOWNLOAD_PRIORITY_POSTER = 2
+DOWNLOAD_PRIORITY_DEFAULT = 3
 
 
 class _ManagedConnection(sqlite3.Connection):
@@ -929,19 +933,62 @@ def _paper_reconcile_state(row: sqlite3.Row) -> dict[str, bool]:
     }
 
 
+def _normalize_download_priority_text(*values: object | None) -> str:
+    chunks: list[str] = []
+    for value in values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        normalized = " ".join(
+            raw.replace("_", " ").replace("-", " ").replace("/", " ").split()
+        ).lower()
+        if normalized:
+            chunks.append(normalized)
+    return " ".join(chunks)
+
+
+def _download_priority_from_metadata(venue: object | None, venueid: object | None) -> int:
+    normalized = _normalize_download_priority_text(venue, venueid)
+    if "oral" in normalized:
+        return DOWNLOAD_PRIORITY_ORAL
+    if "spotlight" in normalized:
+        return DOWNLOAD_PRIORITY_SPOTLIGHT
+    if "poster" in normalized:
+        return DOWNLOAD_PRIORITY_POSTER
+    return DOWNLOAD_PRIORITY_DEFAULT
+
+
+def _download_priority_for_paper_id(conn: sqlite3.Connection, paper_id: str) -> int:
+    row = conn.execute(
+        "SELECT venue, venueid FROM papers WHERE id = ?",
+        (paper_id,),
+    ).fetchone()
+    if row is None:
+        return DOWNLOAD_PRIORITY_DEFAULT
+    return _download_priority_from_metadata(row["venue"], row["venueid"])
+
+
+def _download_sort_key(row: sqlite3.Row) -> tuple[int, str, str]:
+    return (
+        _download_priority_from_metadata(row["venue"], row["venueid"]),
+        str(row["created_at"] or ""),
+        str(row["id"]),
+    )
+
+
 def _download_reconcile_candidates(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute(
         """
-        SELECT id, pdf_path, pdf_sha256, pdf_size_bytes
+        SELECT id, pdf_path, pdf_sha256, pdf_size_bytes, venue, venueid, created_at
         FROM papers
-        ORDER BY created_at, id
         """
     ).fetchall()
-    candidates: list[str] = []
+    candidates: list[sqlite3.Row] = []
     for row in rows:
         if _paper_reconcile_state(row)["needs_reconcile"]:
-            candidates.append(str(row["id"]))
-    return candidates
+            candidates.append(row)
+    candidates.sort(key=_download_sort_key)
+    return [str(row["id"]) for row in candidates]
 
 
 def list_papers_needing_reconcile(limit: int = 20) -> list[dict]:
@@ -949,13 +996,12 @@ def list_papers_needing_reconcile(limit: int = 20) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, title, venue, pdf_path, pdf_sha256, pdf_size_bytes, created_at
+            SELECT id, title, venue, venueid, pdf_path, pdf_sha256, pdf_size_bytes, created_at
             FROM papers
-            ORDER BY created_at, id
             """
         ).fetchall()
 
-    papers: list[dict] = []
+    pending_rows: list[tuple[tuple[int, str, str], dict[str, object]]] = []
     for row in rows:
         state = _paper_reconcile_state(row)
         if not state["needs_reconcile"]:
@@ -969,23 +1015,25 @@ def list_papers_needing_reconcile(limit: int = 20) -> list[dict]:
         if state["metadata_missing"]:
             reasons.append("missing-metadata")
 
-        papers.append(
-            {
-                "id": str(row["id"]),
-                "title": str(row["title"]),
-                "venue": str(row["venue"] or ""),
-                "pdf_path": str(row["pdf_path"]) if row["pdf_path"] else None,
-                "created_at": row["created_at"],
-                "missing_record": state["missing_record"],
-                "missing_file": state["missing_file"],
-                "metadata_missing": state["metadata_missing"],
-                "reasons": reasons,
-            }
+        pending_rows.append(
+            (
+                _download_sort_key(row),
+                {
+                    "id": str(row["id"]),
+                    "title": str(row["title"]),
+                    "venue": str(row["venue"] or ""),
+                    "pdf_path": str(row["pdf_path"]) if row["pdf_path"] else None,
+                    "created_at": row["created_at"],
+                    "missing_record": state["missing_record"],
+                    "missing_file": state["missing_file"],
+                    "metadata_missing": state["metadata_missing"],
+                    "reasons": reasons,
+                },
+            )
         )
-        if len(papers) >= limit:
-            break
 
-    return papers
+    pending_rows.sort(key=lambda item: item[0])
+    return [paper for _, paper in pending_rows[:limit]]
 
 
 def get_db_stats() -> dict:
@@ -1140,31 +1188,47 @@ def get_sync_job(job_id: int) -> dict | None:
         return dict(row) if row is not None else None
 
 
+def _enqueue_or_refresh_download_job(
+    conn: sqlite3.Connection,
+    paper_id: str,
+) -> tuple[int, bool]:
+    priority = _download_priority_for_paper_id(conn, paper_id)
+    cursor = conn.execute(
+        """
+        INSERT OR IGNORE INTO download_jobs (paper_id, status, download_priority)
+        VALUES (?, 'pending', ?)
+        """,
+        (paper_id, priority),
+    )
+    if cursor.rowcount:
+        job_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        return int(job_id), True
+
+    row = conn.execute(
+        """
+        SELECT id, download_priority
+        FROM download_jobs
+        WHERE paper_id = ? AND status IN ('pending', 'running')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (paper_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"active download job missing for paper: {paper_id}")
+
+    if int(row["download_priority"]) != priority:
+        conn.execute(
+            "UPDATE download_jobs SET download_priority = ? WHERE id = ?",
+            (priority, row["id"]),
+        )
+    return int(row["id"]), False
+
+
 def enqueue_download_job(paper_id: str) -> tuple[int, bool]:
     """Enqueue a pending background download job for a paper."""
     with get_connection() as conn:
-        cursor = conn.execute(
-            """
-            INSERT OR IGNORE INTO download_jobs (paper_id, status)
-            VALUES (?, 'pending')
-            """,
-            (paper_id,),
-        )
-        if cursor.rowcount:
-            job_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-            return int(job_id), True
-
-        row = conn.execute(
-            """
-            SELECT id
-            FROM download_jobs
-            WHERE paper_id = ? AND status IN ('pending', 'running')
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (paper_id,),
-        ).fetchone()
-        return int(row[0]), False
+        return _enqueue_or_refresh_download_job(conn, paper_id)
 
 
 def enqueue_reconcile_download_jobs(limit: int | None = None) -> dict:
@@ -1177,16 +1241,10 @@ def enqueue_reconcile_download_jobs(limit: int | None = None) -> dict:
         created = 0
         queued_job_ids: list[int] = []
         for paper_id in candidates:
-            cursor = conn.execute(
-                """
-                INSERT OR IGNORE INTO download_jobs (paper_id, status)
-                VALUES (?, 'pending')
-                """,
-                (paper_id,),
-            )
-            if cursor.rowcount:
+            job_id, was_created = _enqueue_or_refresh_download_job(conn, paper_id)
+            if was_created:
                 created += 1
-                queued_job_ids.append(int(conn.execute("SELECT last_insert_rowid()").fetchone()[0]))
+                queued_job_ids.append(job_id)
 
     return {
         "candidates": len(candidates),
@@ -1211,7 +1269,7 @@ def claim_next_download_job(worker_id: str, lease_seconds: int) -> dict | None:
                 AND lease_expires_at IS NOT NULL
                 AND lease_expires_at <= CURRENT_TIMESTAMP
                )
-            ORDER BY created_at, id
+            ORDER BY download_priority, created_at, id
             LIMIT 1
             """
         ).fetchone()

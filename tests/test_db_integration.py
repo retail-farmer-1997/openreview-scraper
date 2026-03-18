@@ -473,6 +473,93 @@ class DBIntegrationTests(unittest.TestCase):
             self.assertTrue(reconcile_papers[0]["missing_file"])
             self.assertTrue(reconcile_papers[1]["missing_record"])
 
+    def test_enqueue_reconcile_download_jobs_prioritizes_decision_buckets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "priority-enqueue.db"
+            with patch.dict(os.environ, _db_path_env(db_path), clear=False):
+                _reset_settings_cache()
+                db.migrate()
+                db.upsert_paper(
+                    paper_id="paper-poster",
+                    title="Poster Paper",
+                    authors=["Alice"],
+                    abstract="A",
+                    venue="ICLR 2025 Poster",
+                    venueid="ICLR/2025",
+                )
+                db.upsert_paper(
+                    paper_id="paper-other",
+                    title="Workshop Paper",
+                    authors=["Bob"],
+                    abstract="B",
+                    venue="ICLR 2025 Workshop",
+                    venueid="ICLR/2025",
+                )
+                db.upsert_paper(
+                    paper_id="paper-oral",
+                    title="Oral Paper",
+                    authors=["Carol"],
+                    abstract="C",
+                    venue="ICLR 2025 Oral",
+                    venueid="ICLR/2025",
+                )
+                db.upsert_paper(
+                    paper_id="paper-spotlight",
+                    title="Spotlight Paper",
+                    authors=["Dora"],
+                    abstract="D",
+                    venue="ICLR 2025 Spotlight",
+                    venueid="ICLR/2025",
+                )
+
+                queued = db.enqueue_reconcile_download_jobs(limit=3)
+                queued_paper_ids = [
+                    db.get_download_job(job_id)["paper_id"] for job_id in queued["job_ids"]
+                ]
+
+            self.assertEqual(queued["candidates"], 3)
+            self.assertEqual(queued["created"], 3)
+            self.assertEqual(queued_paper_ids, ["paper-oral", "paper-spotlight", "paper-poster"])
+
+    def test_download_job_claim_prefers_higher_priority_over_older_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "priority-claim.db"
+            with patch.dict(os.environ, _db_path_env(db_path), clear=False):
+                _reset_settings_cache()
+                db.migrate()
+                db.upsert_paper(
+                    paper_id="paper-poster",
+                    title="Poster Paper",
+                    authors=["Alice"],
+                    abstract="A",
+                    venue="ICLR 2025 Poster",
+                    venueid="ICLR/2025",
+                )
+                db.upsert_paper(
+                    paper_id="paper-oral",
+                    title="Oral Paper",
+                    authors=["Bob"],
+                    abstract="B",
+                    venue="ICLR 2025 Oral",
+                    venueid="ICLR/2025",
+                )
+
+                poster_job_id, poster_created = db.enqueue_download_job("paper-poster")
+                oral_job_id, oral_created = db.enqueue_download_job("paper-oral")
+                claimed = db.claim_next_download_job(worker_id="worker-priority", lease_seconds=30)
+                poster_job = db.get_download_job(poster_job_id)
+                oral_job = db.get_download_job(oral_job_id)
+                poster_job_after_claim = db.get_download_job(poster_job_id)
+
+            self.assertTrue(poster_created)
+            self.assertTrue(oral_created)
+            self.assertEqual(poster_job["download_priority"], 2)
+            self.assertEqual(oral_job["download_priority"], 0)
+            self.assertIsNotNone(claimed)
+            self.assertEqual(claimed["paper_id"], "paper-oral")
+            self.assertEqual(claimed["download_priority"], 0)
+            self.assertEqual(poster_job_after_claim["status"], "pending")
+
     def test_unresolved_failed_download_jobs_ignore_resolved_papers(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "failed-jobs.db"
