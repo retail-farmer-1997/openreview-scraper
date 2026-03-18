@@ -1,0 +1,64 @@
+{
+  "agent_docs": {
+    "max_agents_lines": 160,
+    "required_files": [
+      "AGENTS.md",
+      "ARCHITECTURE.md",
+      "README.md",
+      "pyproject.toml",
+      "agent-harness.json",
+      "docs/architecture.md",
+      "docs/agent-ops/index.md",
+      "docs/agent-ops/core-beliefs.md",
+      "docs/agent-ops/plans.md",
+      "docs/agent-ops/pr-loop.md",
+      "docs/agent-ops/architecture-invariants.md",
+      "docs/agent-ops/quality-score.md",
+      "docs/agent-ops/testing.md",
+      "docs/agent-ops/reliability.md",
+      "docs/agent-ops/security.md",
+      "docs/exec-plans/tech-debt-tracker.md"
+    ],
+    "required_agent_links": [
+      "ARCHITECTURE.md",
+      "docs/agent-ops/index.md",
+      "docs/agent-ops/pr-loop.md",
+      "docs/exec-plans/tech-debt-tracker.md"
+    ],
+    "metadata_files": [
+      "docs/architecture.md",
+      "docs/agent-ops/index.md",
+      "docs/agent-ops/core-beliefs.md",
+      "docs/agent-ops/plans.md",
+      "docs/agent-ops/pr-loop.md",
+      "docs/agent-ops/architecture-invariants.md",
+      "docs/agent-ops/quality-score.md",
+      "docs/agent-ops/testing.md",
+      "docs/agent-ops/reliability.md",
+      "docs/agent-ops/security.md",
+      "docs/exec-plans/tech-debt-tracker.md"
+    ],
+    "link_check_files": [
+      "AGENTS.md",
+      "ARCHITECTURE.md",
+      "README.md",
+      "docs/architecture.md",
+      "docs/agent-ops/index.md",
+      "docs/agent-ops/core-beliefs.md",
+      "docs/agent-ops/plans.md",
+      "docs/agent-ops/pr-loop.md",
+      "docs/agent-ops/architecture-invariants.md",
+      "docs/agent-ops/quality-score.md",
+      "docs/agent-ops/testing.md",
+      "docs/agent-ops/reliability.md",
+      "docs/agent-ops/security.md",
+      "docs/exec-plans/tech-debt-tracker.md"
+    ],
+    "required_metadata_keys": ["Owner:", "Last Reviewed:", "Status:"]
+  },
+  "plans": {
+    "active_dir": "docs/exec-plans/active",
+    "completed_dir": "docs/exec-plans/completed",
+    "required_sections": ["Objective", "Scope", "Risks", "Validation", "Status Log"]
+  }
+}

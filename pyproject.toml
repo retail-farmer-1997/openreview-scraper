@@ -1,0 +1,27 @@
+[project]
+name = "openreview-scraper"
+version = "0.1.0"
+description = "CLI-only OpenReview tooling"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "retail-farmer-1997" }
+]
+dependencies = [
+    "click>=8.3.1",
+    "openreview-py>=1.59.0",
+    "requests>=2.32.5",
+]
+
+[project.scripts]
+openreview-scraper = "openreview_scraper.cli:main_entry"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
