@@ -7,6 +7,10 @@
       "README.md",
       "pyproject.toml",
       "agent-harness.json",
+      ".agents/skills/linear-project/SKILL.md",
+      ".agents/skills/linear-project/agents/openai.yaml",
+      ".agents/skills/linear-project/references/project-map.md",
+      ".agents/skills/linear-project/references/issue-patterns.md",
       "docs/architecture.md",
       "docs/agent-ops/index.md",
       "docs/agent-ops/core-beliefs.md",
@@ -21,6 +25,7 @@
     ],
     "required_agent_links": [
       "ARCHITECTURE.md",
+      ".agents/skills/linear-project/SKILL.md",
       "docs/agent-ops/index.md",
       "docs/agent-ops/pr-loop.md",
       "docs/exec-plans/tech-debt-tracker.md"
@@ -42,6 +47,9 @@
       "AGENTS.md",
       "ARCHITECTURE.md",
       "README.md",
+      ".agents/skills/linear-project/SKILL.md",
+      ".agents/skills/linear-project/references/project-map.md",
+      ".agents/skills/linear-project/references/issue-patterns.md",
       "docs/architecture.md",
       "docs/agent-ops/index.md",
       "docs/agent-ops/core-beliefs.md",

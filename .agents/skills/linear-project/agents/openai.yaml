@@ -1,0 +1,4 @@
+interface:
+  display_name: "Linear Project"
+  short_description: "Manage this repo with Linear + GitHub"
+  default_prompt: "Use $linear-project to manage openreview-scraper work through Linear and GitHub only."

@@ -9,6 +9,14 @@ priorities; agents execute implementation.
 - Read [docs/agent-ops/index.md](docs/agent-ops/index.md) for the operating model.
 - Read [docs/agent-ops/pr-loop.md](docs/agent-ops/pr-loop.md) before opening PRs.
 - Read [docs/exec-plans/tech-debt-tracker.md](docs/exec-plans/tech-debt-tracker.md) before large refactors.
+- Read [.agents/skills/linear-project/SKILL.md](.agents/skills/linear-project/SKILL.md) when the task touches Linear issues, milestones, project status, release planning, or GitHub/PR linkage.
+
+## Project-Management Source Of Truth
+- Use Linear + GitHub only for this repo.
+- Linear project `OpenReview Scraper` in team `Retail-farmer` owns task state, milestones, priorities, and dependencies.
+- GitHub repo `retail-farmer-1997/openreview-scraper` owns code, branches, PR review, and merged history.
+- Repo docs (`AGENTS.md`, `docs/agent-ops/*`, and `docs/exec-plans/*`) own durable operating instructions and in-flight decision logs.
+- Do not use Notion or other external memory systems for this repo.
 
 ## Operating Rules
 - Keep changes small and independently mergeable.
@@ -16,6 +24,8 @@ priorities; agents execute implementation.
 - Update docs and execution plans in the same PR as behavior changes.
 - Do not add hidden context; decisions must be recorded in-repo.
 - Enforce invariants mechanically where possible.
+- Start non-trivial implementation from a Linear issue or an explicitly referenced execution plan.
+- Keep the Linear issue, branch/PR linkage, and active execution plan aligned when scope or decisions change.
 
 ## Required Artifacts For Non-Trivial Changes
 - An execution plan in `docs/exec-plans/active/`.
