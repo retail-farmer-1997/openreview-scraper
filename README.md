@@ -59,7 +59,10 @@ for machine-readable automation output. By default this worker flow only reconci
 does not fetch the full forum; pass `--cache-forum` if you also want reviews/discussion cached while
 draining the queue. OpenReview requests are throttled conservatively by default so queue drains
 respect low server-side rate limits without requiring per-run flags, and the live/plain-text worker
-status includes request counts plus any active throttle timer.
+status includes request counts plus any active throttle timer. When OpenReview returns 429s, the
+scraper now uses an additive-increase / multiplicative-decrease controller on top of the reset
+window wait so local workers automatically slow down after rate-limit pressure and only recover
+gradually after clean requests.
 
 No dashboard command belongs in this repo.
 

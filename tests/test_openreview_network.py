@@ -167,6 +167,139 @@ class OpenReviewNetworkTests(unittest.TestCase):
         self.assertEqual(snapshot["throttle_reason"], "rate-limit")
         self.assertEqual(snapshot["throttle_seconds"], 9.0)
 
+    def test_request_throttle_adapts_and_recovers_after_rate_limit(self) -> None:
+        class FakeClock:
+            def __init__(self) -> None:
+                self.current = 300.0
+
+            def monotonic(self) -> float:
+                return self.current
+
+            def time(self) -> float:
+                return self.current
+
+        clock = FakeClock()
+        env = {
+            "OPENREVIEW_SCRAPER_OPENREVIEW_MIN_REQUEST_INTERVAL_SECONDS": "10",
+            "OPENREVIEW_SCRAPER_OPENREVIEW_RATE_LIMIT_BUFFER_SECONDS": "0",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            settings.reset_settings_cache()
+            with patch("openreview_scraper.openreview.time.monotonic", side_effect=clock.monotonic):
+                with patch("openreview_scraper.openreview.time.time", side_effect=clock.time):
+                    wait_seconds = orw._OPENREVIEW_REQUEST_THROTTLE.note_rate_limit(
+                        "Too many requests: Please try again in 7 seconds"
+                    )
+                    throttled_snapshot = orw.get_request_metrics_snapshot()
+                    orw._OPENREVIEW_REQUEST_THROTTLE.note_success()
+                    recovering_snapshot = orw.get_request_metrics_snapshot()
+                    for _ in range(9):
+                        orw._OPENREVIEW_REQUEST_THROTTLE.note_success()
+                    recovered_snapshot = orw.get_request_metrics_snapshot()
+
+        self.assertEqual(wait_seconds, 7.0)
+        self.assertEqual(throttled_snapshot["effective_min_interval_seconds"], 20.0)
+        self.assertEqual(throttled_snapshot["adaptive_slowdown_seconds"], 10.0)
+        self.assertTrue(throttled_snapshot["adaptive_slowdown_active"])
+        self.assertEqual(throttled_snapshot["rate_limit_events"], 1)
+        self.assertEqual(throttled_snapshot["consecutive_rate_limits"], 1)
+        self.assertEqual(recovering_snapshot["effective_min_interval_seconds"], 19.0)
+        self.assertEqual(recovering_snapshot["consecutive_rate_limits"], 0)
+        self.assertFalse(recovered_snapshot["adaptive_slowdown_active"])
+        self.assertEqual(recovered_snapshot["effective_min_interval_seconds"], 10.0)
+
+    def test_request_throttle_reports_adaptive_spacing_after_rate_limit(self) -> None:
+        class FakeClock:
+            def __init__(self) -> None:
+                self.current = 100.0
+                self.sleeps: list[float] = []
+
+            def monotonic(self) -> float:
+                return self.current
+
+            def time(self) -> float:
+                return self.current
+
+            def sleep(self, seconds: float) -> None:
+                self.sleeps.append(seconds)
+                self.current += seconds
+
+        class FakeSession:
+            def __init__(self, clock: FakeClock) -> None:
+                self._clock = clock
+                self.calls: list[float] = []
+
+            def request(self, method: str, url: str, *args, **kwargs):
+                del method, url, args, kwargs
+                self.calls.append(self._clock.monotonic())
+                return types.SimpleNamespace(status_code=200, headers={})
+
+        clock = FakeClock()
+        fake_client = types.SimpleNamespace(session=FakeSession(clock))
+        env = {
+            "OPENREVIEW_SCRAPER_OPENREVIEW_MIN_REQUEST_INTERVAL_SECONDS": "2.5",
+            "OPENREVIEW_SCRAPER_OPENREVIEW_RATE_LIMIT_BUFFER_SECONDS": "0",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            settings.reset_settings_cache()
+            with patch("openreview_scraper.openreview.time.monotonic", side_effect=clock.monotonic):
+                with patch("openreview_scraper.openreview.time.time", side_effect=clock.time):
+                    with patch("openreview_scraper.openreview.time.sleep", side_effect=clock.sleep):
+                        orw._OPENREVIEW_REQUEST_THROTTLE.note_rate_limit(
+                            "Too many requests: Please try again in 2 seconds"
+                        )
+                        orw._install_request_throttle(fake_client)
+                        fake_client.session.request("GET", "https://api2.openreview.net/notes")
+                        snapshot = orw.get_request_metrics_snapshot()
+
+        self.assertEqual(clock.sleeps, [2.0])
+        self.assertEqual(fake_client.session.calls, [102.0])
+        self.assertTrue(snapshot["throttle_active"])
+        self.assertEqual(snapshot["throttle_reason"], "adaptive-spacing")
+        self.assertTrue(snapshot["adaptive_slowdown_active"])
+        self.assertEqual(snapshot["throttle_seconds"], 5.0)
+        self.assertEqual(snapshot["effective_min_interval_seconds"], 4.5)
+
+    def test_request_throttle_blocks_from_retry_after_http_date_header(self) -> None:
+        class FakeClock:
+            def __init__(self) -> None:
+                self.current = 100.0
+
+            def monotonic(self) -> float:
+                return self.current
+
+            def time(self) -> float:
+                return self.current
+
+        class FakeSession:
+            def request(self, method: str, url: str, *args, **kwargs):
+                del method, url, args, kwargs
+                return types.SimpleNamespace(
+                    status_code=429,
+                    headers={"Retry-After": "Thu, 01 Jan 1970 00:01:43 GMT"},
+                )
+
+        clock = FakeClock()
+        fake_client = types.SimpleNamespace(session=FakeSession())
+        env = {
+            "OPENREVIEW_SCRAPER_OPENREVIEW_MIN_REQUEST_INTERVAL_SECONDS": "0",
+            "OPENREVIEW_SCRAPER_OPENREVIEW_RATE_LIMIT_BUFFER_SECONDS": "0",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            settings.reset_settings_cache()
+            with patch("openreview_scraper.openreview.time.monotonic", side_effect=clock.monotonic):
+                with patch("openreview_scraper.openreview.time.time", side_effect=clock.time):
+                    orw._install_request_throttle(fake_client)
+                    fake_client.session.request("GET", "https://api2.openreview.net/notes")
+                    snapshot = orw.get_request_metrics_snapshot()
+
+        self.assertTrue(snapshot["throttle_active"])
+        self.assertEqual(snapshot["throttle_reason"], "rate-limit")
+        self.assertEqual(snapshot["throttle_seconds"], 3.0)
+
     def test_rate_limit_retry_waits_until_reset_window(self) -> None:
         exc_cls = orw.openreview.OpenReviewException
 

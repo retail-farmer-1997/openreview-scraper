@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 import hashlib
 import os
 from pathlib import Path
@@ -27,6 +28,11 @@ _RATE_LIMIT_SECONDS_PATTERN = re.compile(
     r"try again in ([0-9]+(?:\.[0-9]+)?) seconds",
     flags=re.IGNORECASE,
 )
+_ADAPTIVE_RATE_LIMIT_MULTIPLIER = 2.0
+_ADAPTIVE_RATE_LIMIT_FLOOR_SECONDS = 1.0
+_ADAPTIVE_RATE_LIMIT_MAX_INTERVAL_SECONDS = 300.0
+_ADAPTIVE_RATE_LIMIT_RECOVERY_STEP_FRACTION = 0.1
+_ADAPTIVE_RATE_LIMIT_MIN_RECOVERY_STEP_SECONDS = 0.5
 
 
 class NetworkOperationError(RuntimeError):
@@ -126,6 +132,23 @@ def _rate_limit_wait_seconds(message: str) -> float | None:
     return max(float(match.group(1)), 0.0)
 
 
+def _parse_retry_after_wait_seconds(value: object) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return max(float(text), 0.0)
+    except ValueError:
+        pass
+    try:
+        retry_after_at = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        return None
+    return max(retry_after_at.timestamp() - time.time(), 0.0)
+
+
 class _OpenReviewRequestThrottle:
     """Process-local throttle for outbound OpenReview HTTP requests."""
 
@@ -134,8 +157,25 @@ class _OpenReviewRequestThrottle:
         self._next_request_at = 0.0
         self._blocked_until = 0.0
         self._request_count = 0
+        self._adaptive_min_interval_seconds = 0.0
+        self._rate_limit_events = 0
+        self._consecutive_rate_limits = 0
+
+    def _effective_min_interval_seconds_unlocked(self, configured_interval: float) -> float:
+        if self._adaptive_min_interval_seconds <= 0:
+            return configured_interval
+        return max(configured_interval, self._adaptive_min_interval_seconds)
+
+    def _recovery_step_seconds(self, configured_interval: float) -> float:
+        return max(
+            configured_interval * _ADAPTIVE_RATE_LIMIT_RECOVERY_STEP_FRACTION,
+            _ADAPTIVE_RATE_LIMIT_MIN_RECOVERY_STEP_SECONDS,
+        )
 
     def _wait_snapshot_unlocked(self, now: float) -> dict[str, object]:
+        configured_interval = get_settings().openreview_min_request_interval_seconds
+        effective_interval = self._effective_min_interval_seconds_unlocked(configured_interval)
+        adaptive_slowdown_seconds = max(effective_interval - configured_interval, 0.0)
         spacing_seconds = max(self._next_request_at - now, 0.0)
         rate_limit_seconds = max(self._blocked_until - now, 0.0)
         throttle_reason = "idle"
@@ -143,6 +183,9 @@ class _OpenReviewRequestThrottle:
         if rate_limit_seconds > 0:
             throttle_reason = "rate-limit"
             throttle_seconds = rate_limit_seconds
+        elif spacing_seconds > 0 and adaptive_slowdown_seconds > 0:
+            throttle_reason = "adaptive-spacing"
+            throttle_seconds = spacing_seconds
         elif spacing_seconds > 0:
             throttle_reason = "spacing"
             throttle_seconds = spacing_seconds
@@ -152,16 +195,23 @@ class _OpenReviewRequestThrottle:
             "throttle_seconds": throttle_seconds,
             "spacing_seconds": spacing_seconds,
             "rate_limit_seconds": rate_limit_seconds,
+            "configured_min_interval_seconds": configured_interval,
+            "effective_min_interval_seconds": effective_interval,
+            "adaptive_min_interval_seconds": self._adaptive_min_interval_seconds,
+            "adaptive_slowdown_seconds": adaptive_slowdown_seconds,
+            "adaptive_slowdown_active": adaptive_slowdown_seconds > 0,
+            "rate_limit_events": self._rate_limit_events,
+            "consecutive_rate_limits": self._consecutive_rate_limits,
         }
 
     def acquire(self) -> None:
         while True:
             with self._lock:
                 now = time.monotonic()
-                min_interval = get_settings().openreview_min_request_interval_seconds
                 wait_snapshot = self._wait_snapshot_unlocked(now)
                 wait_seconds = float(wait_snapshot["throttle_seconds"])
                 if wait_seconds <= 0:
+                    min_interval = float(wait_snapshot["effective_min_interval_seconds"])
                     if min_interval > 0:
                         self._next_request_at = max(self._next_request_at, now) + min_interval
                     return
@@ -174,13 +224,52 @@ class _OpenReviewRequestThrottle:
             self._blocked_until = max(self._blocked_until, time.monotonic() + wait_seconds)
             self._next_request_at = max(self._next_request_at, self._blocked_until)
 
+    def note_success(self) -> None:
+        with self._lock:
+            self._consecutive_rate_limits = 0
+            if self._adaptive_min_interval_seconds <= 0:
+                return
+
+            configured_interval = get_settings().openreview_min_request_interval_seconds
+            reduced_interval = (
+                self._adaptive_min_interval_seconds - self._recovery_step_seconds(configured_interval)
+            )
+            if reduced_interval <= configured_interval:
+                self._adaptive_min_interval_seconds = 0.0
+                return
+            self._adaptive_min_interval_seconds = reduced_interval
+
     def note_rate_limit(self, message: str) -> float | None:
         wait_seconds = _rate_limit_wait_seconds(message)
-        if wait_seconds is None:
-            return None
-        wait_seconds += get_settings().openreview_rate_limit_buffer_seconds
-        self.block_for(wait_seconds)
-        return wait_seconds
+        runtime_settings = get_settings()
+        blocked_seconds = None
+        if wait_seconds is not None:
+            blocked_seconds = wait_seconds + runtime_settings.openreview_rate_limit_buffer_seconds
+
+        with self._lock:
+            configured_interval = runtime_settings.openreview_min_request_interval_seconds
+            effective_interval = self._effective_min_interval_seconds_unlocked(configured_interval)
+            target_interval = min(
+                max(
+                    effective_interval * _ADAPTIVE_RATE_LIMIT_MULTIPLIER,
+                    configured_interval,
+                    wait_seconds or 0.0,
+                    _ADAPTIVE_RATE_LIMIT_FLOOR_SECONDS,
+                ),
+                _ADAPTIVE_RATE_LIMIT_MAX_INTERVAL_SECONDS,
+            )
+            if target_interval > configured_interval:
+                self._adaptive_min_interval_seconds = max(
+                    self._adaptive_min_interval_seconds,
+                    target_interval,
+                )
+            self._rate_limit_events += 1
+            self._consecutive_rate_limits += 1
+            if blocked_seconds is not None and blocked_seconds > 0:
+                self._blocked_until = max(self._blocked_until, time.monotonic() + blocked_seconds)
+                self._next_request_at = max(self._next_request_at, self._blocked_until)
+
+        return blocked_seconds
 
     def record_request(self) -> None:
         with self._lock:
@@ -199,6 +288,9 @@ class _OpenReviewRequestThrottle:
             self._next_request_at = 0.0
             self._blocked_until = 0.0
             self._request_count = 0
+            self._adaptive_min_interval_seconds = 0.0
+            self._rate_limit_events = 0
+            self._consecutive_rate_limits = 0
 
 
 _OPENREVIEW_REQUEST_THROTTLE = _OpenReviewRequestThrottle()
@@ -291,15 +383,15 @@ def _install_request_throttle(client: Any) -> None:
         _OPENREVIEW_REQUEST_THROTTLE.acquire()
         _OPENREVIEW_REQUEST_THROTTLE.record_request()
         response = original_request(method, url, *args, **kwargs)
-        if getattr(response, "status_code", None) == 429:
-            retry_after = response.headers.get("Retry-After")
-            if retry_after:
-                try:
-                    _OPENREVIEW_REQUEST_THROTTLE.block_for(
-                        float(retry_after) + get_settings().openreview_rate_limit_buffer_seconds
-                    )
-                except ValueError:
-                    pass
+        status_code = getattr(response, "status_code", None)
+        if status_code == 429:
+            retry_after_seconds = _parse_retry_after_wait_seconds(response.headers.get("Retry-After"))
+            if retry_after_seconds is not None:
+                _OPENREVIEW_REQUEST_THROTTLE.block_for(
+                    retry_after_seconds + get_settings().openreview_rate_limit_buffer_seconds
+                )
+        elif isinstance(status_code, int) and status_code < 400:
+            _OPENREVIEW_REQUEST_THROTTLE.note_success()
         return response
 
     session.request = throttled_request
