@@ -1,4 +1,5 @@
 .venv/
+.git-worktrees/
 __pycache__/
 .mypy_cache/
 .pytest_cache/
