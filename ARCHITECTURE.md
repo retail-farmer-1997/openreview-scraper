@@ -10,15 +10,16 @@ CLI-first OpenReview paper ingestion, local storage, and analysis toolkit withou
 - `src/openreview_scraper/db.py`: SQLite schema, migrations, and repository-style persistence helpers.
 - `src/openreview_scraper/models.py`: typed domain objects and parsing helpers with no I/O concerns.
 - `src/openreview_scraper/settings.py`: runtime configuration and environment-driven path resolution.
+- `src/openreview_scraper/storage.py`: storage runtime selection, cache-path/locator mapping, and future GCS sync lifecycle hooks.
 - `src/openreview_scraper/worker.py`: background queue orchestration built on `service`, not a second business-logic layer.
 - `scripts/bootstrap_local_cli.py`: repo-local launcher bootstrap for `./openreview-scraper`.
 
 ## Dependency Direction
 - `openreview_scraper.__main__` may only call `openreview_scraper.cli`.
-- `cli` may depend on `service`, `db`, `models`, `settings`, `openreview`, `worker`, and `observability` when that module exists.
-- `service` may depend on `db`, `models`, `settings`, and `openreview`.
-- `worker` may depend on `service`, `db`, and `settings`.
-- `db`, `models`, and `settings` are leaf-oriented modules and must not depend on CLI or worker code.
+- `cli` may depend on `service`, `db`, `models`, `settings`, `storage`, `openreview`, `worker`, and `observability` when that module exists.
+- `service` may depend on `db`, `models`, `settings`, `storage`, and `openreview`.
+- `worker` may depend on `service`, `db`, `settings`, and `storage`.
+- `db`, `models`, `settings`, and `storage` are leaf-oriented modules and must not depend on CLI or worker code.
 - `openreview` may depend on `models` and `settings`, but must not depend on persistence or CLI layers.
 
 ## Enforced Dependency Rules

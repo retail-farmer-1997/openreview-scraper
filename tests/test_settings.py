@@ -45,6 +45,14 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(cfg.db_path, (expected_data_dir / "openreview-scraper.db").resolve())
         self.assertEqual(cfg.papers_dir, (expected_data_dir / "papers").resolve())
+        self.assertEqual(cfg.storage_mode, "local")
+        self.assertIsNone(cfg.gcs_bucket)
+        self.assertEqual(cfg.gcs_prefix, "")
+        self.assertEqual(cfg.gcs_cache_dir, (expected_data_dir / "gcs-cache").resolve())
+        self.assertEqual(cfg.storage_sync_interval_seconds, 60.0)
+        self.assertEqual(cfg.storage_flush_after_jobs, 25)
+        self.assertEqual(cfg.storage_lock_timeout_seconds, 300.0)
+        self.assertEqual(cfg.storage_lock_poll_interval_seconds, 5.0)
         self.assertEqual(cfg.openreview_api_url, "https://api2.openreview.net")
         self.assertEqual(cfg.openreview_web_url, "https://openreview.net")
         self.assertIsNone(cfg.openreview_username)
@@ -54,6 +62,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(cfg.http_max_retries, 0)
         self.assertEqual(cfg.http_retry_backoff_seconds, 1.0)
         self.assertEqual(cfg.http_retry_jitter_seconds, 0.1)
+        self.assertEqual(cfg.openreview_min_request_interval_seconds, 12.0)
+        self.assertEqual(cfg.openreview_rate_limit_buffer_seconds, 2.0)
         self.assertEqual(cfg.db_busy_timeout_ms, 5000)
         self.assertEqual(cfg.download_job_lease_seconds, 900)
 
@@ -81,6 +91,8 @@ class SettingsTests(unittest.TestCase):
                 "OPENREVIEW_SCRAPER_HTTP_MAX_RETRIES": "3",
                 "OPENREVIEW_SCRAPER_HTTP_RETRY_BACKOFF_SECONDS": "0.25",
                 "OPENREVIEW_SCRAPER_HTTP_RETRY_JITTER_SECONDS": "0.05",
+                "OPENREVIEW_SCRAPER_OPENREVIEW_MIN_REQUEST_INTERVAL_SECONDS": "4.5",
+                "OPENREVIEW_SCRAPER_OPENREVIEW_RATE_LIMIT_BUFFER_SECONDS": "1.25",
                 "OPENREVIEW_SCRAPER_DB_BUSY_TIMEOUT_MS": "7500",
                 "OPENREVIEW_SCRAPER_DOWNLOAD_JOB_LEASE_SECONDS": "1800",
             }
@@ -99,6 +111,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(cfg.http_max_retries, 3)
         self.assertEqual(cfg.http_retry_backoff_seconds, 0.25)
         self.assertEqual(cfg.http_retry_jitter_seconds, 0.05)
+        self.assertEqual(cfg.openreview_min_request_interval_seconds, 4.5)
+        self.assertEqual(cfg.openreview_rate_limit_buffer_seconds, 1.25)
         self.assertEqual(cfg.db_busy_timeout_ms, 7500)
         self.assertEqual(cfg.download_job_lease_seconds, 1800)
 
@@ -146,6 +160,53 @@ class SettingsTests(unittest.TestCase):
     def test_invalid_timeout_raises_clear_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "OPENREVIEW_SCRAPER_HTTP_TIMEOUT_SECONDS"):
             settings.load_settings(env={"OPENREVIEW_SCRAPER_HTTP_TIMEOUT_SECONDS": "0"})
+
+    def test_gcs_sync_mode_normalizes_bucket_prefix_and_cache_settings(self) -> None:
+        cfg = settings.load_settings(
+            env={
+                "OPENREVIEW_SCRAPER_STORAGE_MODE": "gcs-sync",
+                "OPENREVIEW_SCRAPER_GCS_BUCKET": "gs://openreview-scraper-data",
+                "OPENREVIEW_SCRAPER_GCS_PREFIX": "/team//daily-sync/",
+                "OPENREVIEW_SCRAPER_GCS_CACHE_DIR": "tmp/gcs-cache",
+                "OPENREVIEW_SCRAPER_STORAGE_SYNC_INTERVAL_SECONDS": "120",
+                "OPENREVIEW_SCRAPER_STORAGE_FLUSH_AFTER_JOBS": "7",
+                "OPENREVIEW_SCRAPER_STORAGE_LOCK_TIMEOUT_SECONDS": "42.5",
+                "OPENREVIEW_SCRAPER_STORAGE_LOCK_POLL_INTERVAL_SECONDS": "0.5",
+            }
+        )
+
+        self.assertEqual(cfg.storage_mode, "gcs-sync")
+        self.assertEqual(cfg.gcs_bucket, "openreview-scraper-data")
+        self.assertEqual(cfg.gcs_prefix, "team/daily-sync")
+        self.assertEqual(
+            cfg.gcs_cache_dir,
+            (settings.PROJECT_ROOT / "tmp" / "gcs-cache").resolve(),
+        )
+        self.assertEqual(cfg.storage_sync_interval_seconds, 120.0)
+        self.assertEqual(cfg.storage_flush_after_jobs, 7)
+        self.assertEqual(cfg.storage_lock_timeout_seconds, 42.5)
+        self.assertEqual(cfg.storage_lock_poll_interval_seconds, 0.5)
+
+    def test_gcs_sync_mode_requires_bucket(self) -> None:
+        with self.assertRaisesRegex(ValueError, "OPENREVIEW_SCRAPER_GCS_BUCKET is required"):
+            settings.load_settings(env={"OPENREVIEW_SCRAPER_STORAGE_MODE": "gcs-sync"})
+
+    def test_invalid_storage_mode_raises_clear_error(self) -> None:
+        with self.assertRaisesRegex(ValueError, "OPENREVIEW_SCRAPER_STORAGE_MODE"):
+            settings.load_settings(env={"OPENREVIEW_SCRAPER_STORAGE_MODE": "s3"})
+
+    def test_local_mode_ignores_unused_gcs_settings(self) -> None:
+        cfg = settings.load_settings(
+            env={
+                "OPENREVIEW_SCRAPER_STORAGE_MODE": "local",
+                "OPENREVIEW_SCRAPER_GCS_BUCKET": "not/a/bucket",
+                "OPENREVIEW_SCRAPER_GCS_PREFIX": "gs://wrong-shape",
+            }
+        )
+
+        self.assertEqual(cfg.storage_mode, "local")
+        self.assertIsNone(cfg.gcs_bucket)
+        self.assertEqual(cfg.gcs_prefix, "")
 
     def test_empty_env_value_raises_clear_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "OPENREVIEW_SCRAPER_DB_PATH cannot be empty"):

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import ast
+from datetime import datetime
 import hashlib
 import os
 from pathlib import Path
+import re
 import requests
+import threading
 import tempfile
 import time
 from typing import Any, Callable, TypeVar
@@ -19,6 +23,10 @@ from .settings import get_settings
 _T = TypeVar("_T")
 DownloadProgressCallback = Callable[[dict[str, object]], None]
 DOWNLOAD_CHUNK_SIZE_BYTES = 64 * 1024
+_RATE_LIMIT_SECONDS_PATTERN = re.compile(
+    r"try again in ([0-9]+(?:\.[0-9]+)?) seconds",
+    flags=re.IGNORECASE,
+)
 
 
 class NetworkOperationError(RuntimeError):
@@ -31,6 +39,116 @@ class RateLimitError(NetworkOperationError):
 
 class PDFValidationError(NetworkOperationError):
     """Raised when downloaded PDF content fails validation."""
+
+
+def _parse_rate_limit_payload(message: str) -> dict[str, object] | None:
+    stripped = message.strip()
+    if not stripped.startswith("{") or not stripped.endswith("}"):
+        return None
+    try:
+        payload = ast.literal_eval(stripped)
+    except (SyntaxError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _parse_reset_epoch(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        numeric_value = float(value)
+        if numeric_value > 10_000_000_000:
+            return numeric_value / 1000.0
+        return numeric_value
+
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        pass
+    try:
+        numeric_value = float(text)
+    except ValueError:
+        return None
+    if numeric_value > 10_000_000_000:
+        return numeric_value / 1000.0
+    return numeric_value
+
+
+def _rate_limit_wait_seconds(message: str) -> float | None:
+    payload = _parse_rate_limit_payload(message)
+    if payload is not None:
+        details = payload.get("details")
+        if isinstance(details, dict):
+            reset_epoch = _parse_reset_epoch(details.get("resetTime"))
+            if reset_epoch is not None:
+                return max(reset_epoch - time.time(), 0.0)
+
+    match = _RATE_LIMIT_SECONDS_PATTERN.search(message)
+    if match is None:
+        return None
+    return max(float(match.group(1)), 0.0)
+
+
+class _OpenReviewRequestThrottle:
+    """Process-local throttle for outbound OpenReview HTTP requests."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._next_request_at = 0.0
+        self._blocked_until = 0.0
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                min_interval = get_settings().openreview_min_request_interval_seconds
+                wait_seconds = max(self._next_request_at - now, self._blocked_until - now, 0.0)
+                if wait_seconds <= 0:
+                    if min_interval > 0:
+                        self._next_request_at = max(self._next_request_at, now) + min_interval
+                    return
+            time.sleep(wait_seconds)
+
+    def block_for(self, wait_seconds: float) -> None:
+        if wait_seconds <= 0:
+            return
+        with self._lock:
+            self._blocked_until = max(self._blocked_until, time.monotonic() + wait_seconds)
+            self._next_request_at = max(self._next_request_at, self._blocked_until)
+
+    def note_rate_limit(self, message: str) -> float | None:
+        wait_seconds = _rate_limit_wait_seconds(message)
+        if wait_seconds is None:
+            return None
+        wait_seconds += get_settings().openreview_rate_limit_buffer_seconds
+        self.block_for(wait_seconds)
+        return wait_seconds
+
+    def reset(self) -> None:
+        with self._lock:
+            self._next_request_at = 0.0
+            self._blocked_until = 0.0
+
+
+_OPENREVIEW_REQUEST_THROTTLE = _OpenReviewRequestThrottle()
+_OPENREVIEW_CLIENT_LOCAL = threading.local()
+
+
+def _reset_request_throttle() -> None:
+    _OPENREVIEW_REQUEST_THROTTLE.reset()
+
+
+def _reset_client_cache() -> None:
+    for attribute in ("client", "cache_key"):
+        if hasattr(_OPENREVIEW_CLIENT_LOCAL, attribute):
+            delattr(_OPENREVIEW_CLIENT_LOCAL, attribute)
 
 
 def _is_rate_limited(message: str) -> bool:
@@ -78,6 +196,41 @@ def _sleep_before_retry(attempt: int) -> None:
         time.sleep(delay)
 
 
+def _sleep_before_rate_limit_retry(message: str, attempt: int) -> None:
+    wait_seconds = _OPENREVIEW_REQUEST_THROTTLE.note_rate_limit(message)
+    if wait_seconds is None:
+        _sleep_before_retry(attempt)
+        return
+    time.sleep(max(wait_seconds, _retry_delay(attempt)))
+
+
+def _install_request_throttle(client: Any) -> None:
+    session = getattr(client, "session", None)
+    if session is None or getattr(session, "_openreview_scraper_throttled", False):
+        return
+
+    original_request = getattr(session, "request", None)
+    if original_request is None:
+        return
+
+    def throttled_request(method: str, url: str, *args, **kwargs):
+        _OPENREVIEW_REQUEST_THROTTLE.acquire()
+        response = original_request(method, url, *args, **kwargs)
+        if getattr(response, "status_code", None) == 429:
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    _OPENREVIEW_REQUEST_THROTTLE.block_for(
+                        float(retry_after) + get_settings().openreview_rate_limit_buffer_seconds
+                    )
+                except ValueError:
+                    pass
+        return response
+
+    session.request = throttled_request
+    session._openreview_scraper_throttled = True
+
+
 def _retry_openreview_call(
     operation_name: str,
     operation: Callable[[], _T],
@@ -121,13 +274,14 @@ def _retry_openreview_call(
 
             if _is_rate_limited(message):
                 if is_last_attempt:
+                    _OPENREVIEW_REQUEST_THROTTLE.note_rate_limit(message)
                     raise RateLimitError(
                         f"Rate-limited during '{operation_name}' after {max_attempts} "
                         "attempt(s). Retry later or increase "
                         "OPENREVIEW_SCRAPER_HTTP_MAX_RETRIES/"
                         "OPENREVIEW_SCRAPER_HTTP_RETRY_BACKOFF_SECONDS."
                     ) from exc
-                _sleep_before_retry(attempt)
+                _sleep_before_rate_limit_retry(message, attempt)
                 continue
 
             if _is_transient(message):
@@ -508,12 +662,27 @@ def _download_pdf_artifact_via_streaming_client(
 def get_client() -> openreview.api.OpenReviewClient:
     """Get an OpenReview API client."""
     runtime_settings = get_settings()
-    return openreview.api.OpenReviewClient(
+    cache_key = (
+        runtime_settings.openreview_api_url,
+        runtime_settings.openreview_username,
+        runtime_settings.openreview_password,
+        runtime_settings.openreview_token,
+    )
+    cached_client = getattr(_OPENREVIEW_CLIENT_LOCAL, "client", None)
+    cached_key = getattr(_OPENREVIEW_CLIENT_LOCAL, "cache_key", None)
+    if cached_client is not None and cached_key == cache_key:
+        return cached_client
+
+    client = openreview.api.OpenReviewClient(
         baseurl=runtime_settings.openreview_api_url,
         username=runtime_settings.openreview_username,
         password=runtime_settings.openreview_password,
         token=runtime_settings.openreview_token,
     )
+    _install_request_throttle(client)
+    _OPENREVIEW_CLIENT_LOCAL.client = client
+    _OPENREVIEW_CLIENT_LOCAL.cache_key = cache_key
+    return client
 
 
 def _unwrap_openreview_value(value: Any) -> Any:

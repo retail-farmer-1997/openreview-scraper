@@ -8,9 +8,9 @@ Canonical source: root-level `ARCHITECTURE.md`.
 
 ## Summary
 - The repo is intentionally CLI-only: command parsing in `cli.py`, business orchestration in `service.py`, and no dashboard/runtime UI package.
-- External I/O is split cleanly between `openreview.py` for network access and `db.py` for local persistence.
-- `models.py` and `settings.py` are the stability anchors; they should remain small, typed, and reusable across command flows.
+- External I/O is split cleanly between `openreview.py` for network access, `db.py` for local persistence, and `storage.py` for storage-mode/runtime selection.
+- `models.py`, `settings.py`, and `storage.py` are the stability anchors; they should remain small, typed, and reusable across command flows.
 
 ## Dependency Direction
-- Presentation flows inward: `__main__ -> cli -> service/openreview/db/settings/models/worker`.
-- Leaf modules do not reach back upward: `models.py`, `settings.py`, and eventually `observability.py` stay independent from CLI and worker orchestration.
+- Presentation flows inward: `__main__ -> cli -> service/openreview/db/settings/storage/models/worker`.
+- Leaf modules do not reach back upward: `models.py`, `settings.py`, `storage.py`, and eventually `observability.py` stay independent from CLI and worker orchestration.

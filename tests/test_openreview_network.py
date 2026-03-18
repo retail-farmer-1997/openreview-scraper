@@ -43,9 +43,13 @@ from openreview_scraper import openreview as orw, settings
 class OpenReviewNetworkTests(unittest.TestCase):
     def setUp(self) -> None:
         settings.reset_settings_cache()
+        orw._reset_request_throttle()
+        orw._reset_client_cache()
 
     def tearDown(self) -> None:
         settings.reset_settings_cache()
+        orw._reset_request_throttle()
+        orw._reset_client_cache()
 
     def test_fetch_paper_retries_transient_openreview_error(self) -> None:
         exc_cls = orw.openreview.OpenReviewException
@@ -86,6 +90,98 @@ class OpenReviewNetworkTests(unittest.TestCase):
         self.assertEqual(paper.id, "paper-1")
         self.assertEqual(fake_client.calls, 2)
 
+    def test_request_throttle_spaces_session_requests(self) -> None:
+        class FakeClock:
+            def __init__(self) -> None:
+                self.current = 100.0
+                self.sleeps: list[float] = []
+
+            def monotonic(self) -> float:
+                return self.current
+
+            def time(self) -> float:
+                return self.current
+
+            def sleep(self, seconds: float) -> None:
+                self.sleeps.append(seconds)
+                self.current += seconds
+
+        class FakeSession:
+            def __init__(self, clock: FakeClock) -> None:
+                self._clock = clock
+                self.calls: list[float] = []
+
+            def request(self, method: str, url: str, *args, **kwargs):
+                del method, url, args, kwargs
+                self.calls.append(self._clock.monotonic())
+                return types.SimpleNamespace(status_code=200, headers={})
+
+        clock = FakeClock()
+        fake_client = types.SimpleNamespace(session=FakeSession(clock))
+        env = {
+            "OPENREVIEW_SCRAPER_OPENREVIEW_MIN_REQUEST_INTERVAL_SECONDS": "2.5",
+            "OPENREVIEW_SCRAPER_OPENREVIEW_RATE_LIMIT_BUFFER_SECONDS": "0",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            settings.reset_settings_cache()
+            with patch("openreview_scraper.openreview.time.monotonic", side_effect=clock.monotonic):
+                with patch("openreview_scraper.openreview.time.time", side_effect=clock.time):
+                    with patch("openreview_scraper.openreview.time.sleep", side_effect=clock.sleep):
+                        orw._install_request_throttle(fake_client)
+                        fake_client.session.request("GET", "https://api2.openreview.net/notes")
+                        fake_client.session.request("GET", "https://api2.openreview.net/notes")
+
+        self.assertEqual(fake_client.session.calls, [100.0, 102.5])
+        self.assertEqual(clock.sleeps, [2.5])
+
+    def test_rate_limit_retry_waits_until_reset_window(self) -> None:
+        exc_cls = orw.openreview.OpenReviewException
+
+        class FakeClock:
+            def __init__(self) -> None:
+                self.current = 50.0
+                self.sleeps: list[float] = []
+
+            def monotonic(self) -> float:
+                return self.current
+
+            def time(self) -> float:
+                return self.current
+
+            def sleep(self, seconds: float) -> None:
+                self.sleeps.append(seconds)
+                self.current += seconds
+
+        clock = FakeClock()
+        env = {
+            "OPENREVIEW_SCRAPER_HTTP_MAX_RETRIES": "1",
+            "OPENREVIEW_SCRAPER_HTTP_RETRY_BACKOFF_SECONDS": "0",
+            "OPENREVIEW_SCRAPER_HTTP_RETRY_JITTER_SECONDS": "0",
+            "OPENREVIEW_SCRAPER_OPENREVIEW_MIN_REQUEST_INTERVAL_SECONDS": "0",
+            "OPENREVIEW_SCRAPER_OPENREVIEW_RATE_LIMIT_BUFFER_SECONDS": "2",
+        }
+
+        calls = 0
+
+        def fake_operation() -> str:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise exc_cls("Too many requests: Please try again in 7 seconds")
+            return "ok"
+
+        with patch.dict(os.environ, env, clear=False):
+            settings.reset_settings_cache()
+            with patch("openreview_scraper.openreview.time.monotonic", side_effect=clock.monotonic):
+                with patch("openreview_scraper.openreview.time.time", side_effect=clock.time):
+                    with patch("openreview_scraper.openreview.time.sleep", side_effect=clock.sleep):
+                        result = orw._retry_openreview_call("rate-limit-op", fake_operation)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(calls, 2)
+        self.assertEqual(clock.sleeps, [9.0])
+
     def test_fetch_paper_returns_none_for_not_found(self) -> None:
         exc_cls = orw.openreview.OpenReviewException
 
@@ -117,6 +213,22 @@ class OpenReviewNetworkTests(unittest.TestCase):
             password="secret",
             token="token-123",
         )
+
+    def test_get_client_reuses_thread_local_authenticated_client(self) -> None:
+        env = {
+            "OPENREVIEW_SCRAPER_OPENREVIEW_API_URL": "https://api2.openreview.net",
+            "OPENREVIEW_SCRAPER_OPENREVIEW_USERNAME": "alice@example.com",
+            "OPENREVIEW_SCRAPER_OPENREVIEW_PASSWORD": "secret",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            settings.reset_settings_cache()
+            with patch("openreview_scraper.openreview.openreview.api.OpenReviewClient") as client_cls:
+                first = orw.get_client()
+                second = orw.get_client()
+
+        self.assertIs(first, second)
+        client_cls.assert_called_once()
 
     def test_fetch_papers_by_venue_uses_submission_invitation_and_filters_decision(self) -> None:
         oral_note = types.SimpleNamespace(

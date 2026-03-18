@@ -55,7 +55,8 @@ After fetching metadata into the local DB, queue and drain the missing PDFs loca
 that still need PDF work, runs local workers in parallel, and shows a live interactive dashboard on
 TTY terminals with per-worker paper progress plus an overall completion/utilization bar. Use
 `--status-interval-seconds 0` to disable periodic plain-text status snapshots or `--json-output`
-for machine-readable automation output.
+for machine-readable automation output. OpenReview requests are throttled conservatively by default
+so queue drains respect low server-side rate limits without requiring per-run flags.
 
 No dashboard command belongs in this repo.
 
@@ -73,6 +74,9 @@ for callers that already have an OpenReview session token and do not want the cl
 their behalf.
 
 - Optional existing-session variable: `OPENREVIEW_SCRAPER_OPENREVIEW_TOKEN`
+- Optional throttle tuning:
+  `OPENREVIEW_SCRAPER_OPENREVIEW_MIN_REQUEST_INTERVAL_SECONDS`,
+  `OPENREVIEW_SCRAPER_OPENREVIEW_RATE_LIMIT_BUFFER_SECONDS`
 
 Compatibility fallbacks remain enabled during the port:
 

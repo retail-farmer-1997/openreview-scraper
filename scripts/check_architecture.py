@@ -19,6 +19,7 @@ LAYER_RULES: dict[str, set[str]] = {
         "openreview_scraper.openreview",
         "openreview_scraper.service",
         "openreview_scraper.settings",
+        "openreview_scraper.storage",
         "openreview_scraper.worker",
     },
     "openreview_scraper.openreview": {
@@ -28,16 +29,19 @@ LAYER_RULES: dict[str, set[str]] = {
     "openreview_scraper.db": {"openreview_scraper.settings"},
     "openreview_scraper.models": set(),
     "openreview_scraper.settings": set(),
+    "openreview_scraper.storage": {"openreview_scraper.settings"},
     "openreview_scraper.service": {
         "openreview_scraper.db",
         "openreview_scraper.models",
         "openreview_scraper.openreview",
         "openreview_scraper.settings",
+        "openreview_scraper.storage",
     },
     "openreview_scraper.worker": {
         "openreview_scraper.db",
         "openreview_scraper.service",
         "openreview_scraper.settings",
+        "openreview_scraper.storage",
     },
 }
 

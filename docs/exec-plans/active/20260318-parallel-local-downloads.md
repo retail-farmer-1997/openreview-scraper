@@ -19,9 +19,9 @@ processed.
   queued.
 
 ## Validation
-- `python3 scripts/check_agent_docs.py`
-- `python3 scripts/check_architecture.py`
-- `python3 scripts/run_repo_checks.py tests`
+- `uv run python scripts/check_agent_docs.py`
+- `uv run python scripts/check_architecture.py`
+- `uv run python scripts/run_repo_checks.py tests`
 
 ## Status Log
 - 2026-03-18: Confirmed the current repo already has queued download jobs plus a single-worker
@@ -39,6 +39,13 @@ processed.
 - 2026-03-18: Upgraded `worker run-downloads` from count-only status lines to streamed per-paper
   progress events plus an interactive terminal dashboard with active paper titles, worker-slot
   progress bars, and aggregate throughput/constraint reporting.
+- 2026-03-18: Added a process-local OpenReview request throttle with conservative default spacing
+  plus 429 reset-window handling so queue drains stop outrunning the server request budget.
+- 2026-03-18: Reduced per-paper request overhead by reusing one authenticated OpenReview client
+  per worker thread instead of logging in again for each PDF/reviews/discussion fetch.
+- 2026-03-18: Verified the throttled worker path against the local box state: a real
+  `worker run-downloads --workers 1 --max-jobs 2` drained 2/2 jobs successfully instead of
+  failing immediately with 429s.
 - 2026-03-18: Validation passed for the richer runner with `uv run python
   scripts/check_agent_docs.py`, `uv run python scripts/check_architecture.py`, and `uv run python
   scripts/run_repo_checks.py tests`.
