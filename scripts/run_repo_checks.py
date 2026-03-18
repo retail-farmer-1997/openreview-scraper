@@ -30,6 +30,7 @@ def run_tests() -> None:
 
 CHECKS: dict[str, Callable[[], None]] = {
     "guardrails": run_guardrails,
+    "packaging": lambda: _run([sys.executable, "scripts/run_packaging_smoke.py"]),
     "tests": run_tests,
 }
 
